@@ -1,0 +1,65 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>PhoneDisplay FPS test</title>
+<style>
+  html, body { margin: 0; height: 100%; background: #000; overflow: hidden; }
+  canvas { display: block; }
+  #hud { position: fixed; top: 20px; left: 30px; color: #0f0;
+         font: bold 72px Menlo, monospace; text-shadow: 0 0 8px #0f0; }
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+<div id="hud">-- fps</div>
+<script>
+const c = document.getElementById('c');
+const x = c.getContext('2d');
+function resize() { c.width = innerWidth; c.height = innerHeight; }
+addEventListener('resize', resize); resize();
+
+let n = 0, t0 = performance.now(), scroll = 0, ballX = 0, ballVX = 14, ballY = 120, ballVY = 9;
+const bars = ['#e74c3c','#f39c12','#f1c40f','#2ecc71','#1abc9c','#3498db','#9b59b6','#e84393'];
+
+function frame(t) {
+  const dt = t - t0;
+  n++;
+  if (dt >= 500) {
+    document.getElementById('hud').textContent = (n * 1000 / dt).toFixed(1) + ' fps';
+    n = 0; t0 = t;
+  }
+
+  const W = c.width, H = c.height, bw = W / 16;
+
+  // scrolling colour bars (large-area changes every frame)
+  scroll = (scroll + 6) % (bw * 2);
+  for (let i = -2; i < 18; i++) {
+    x.fillStyle = bars[((i % 8) + 8) % 8];
+    x.fillRect(i * bw * 2 - scroll, 0, bw, H * 0.72);
+  }
+  // dark bottom band
+  x.fillStyle = '#111';
+  x.fillRect(0, H * 0.72, W, H * 0.28);
+
+  // bouncing ball (fast, obvious motion)
+  ballX += ballVX; ballY += ballVY;
+  if (ballX < 60 || ballX > W - 60) ballVX = -ballVX;
+  if (ballY < 160 || ballY > H - 60) ballVY = -ballVY;
+  x.fillStyle = '#fff';
+  x.beginPath(); x.arc(ballX, ballY, 54, 0, 7); x.fill();
+
+  // rotating second hand line
+  const ang = t / 500;
+  x.strokeStyle = '#fff'; x.lineWidth = 10;
+  x.beginPath();
+  x.moveTo(W / 2, H * 0.86);
+  x.lineTo(W / 2 + Math.cos(ang) * W * 0.4, H * 0.86 + Math.sin(ang) * H * 0.12);
+  x.stroke();
+
+  requestAnimationFrame(frame);
+}
+requestAnimationFrame(frame);
+</script>
+</body>
+</html>

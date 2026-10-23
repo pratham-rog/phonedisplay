@@ -1,0 +1,32 @@
+# macOS
+.DS_Store
+
+# Python
+__pycache__/
+*.py[cod]
+
+# Logs and runtime output
+*.log
+
+# Host build artifacts
+host-macos/vdhelper
+host-macos/vdhelper.app/
+
+# Tool build artifacts
+tools/vdfpswin
+
+# Android / Gradle
+android/.gradle/
+android/build/
+android/app/build/
+android/local.properties
+android/.idea/
+*.iml
+*.apk
+*.aab
+captures/
+.cxx/
+
+# Signing material
+*.jks
+*.keystore
