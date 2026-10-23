@@ -1,11 +1,39 @@
 # Next session — resume notes
 
-**Status: full-pipeline audit complete — every defect found in a top-to-bottom
-read is fixed and verified, and `tools/selftest.py` covers the host protocol
-(8/8). The only unverified feature remains the S-Pen side button on real
-hardware.**
+**Status: post-audit hardening implemented — all 20 findings from the second
+audit are in the working tree; host, helper and app build. Host selftest is 8/8
+with `--probe` and a live stream log; the app is connected over USB at
+3120×1440 / 90 fps with the token, and the 3× cursor is visible. The physical
+S-Pen 25 s idle-off and held-tip tests are still manual/unverified.**
 
-## Full-pipeline audit (latest pass)
+## Post-audit hardening (current pass)
+
+- **Auth**: first stream creates `~/.phonedisplay-token` (0600); clients send
+  `PD01 <token>`; app uses `host:port#token`; `--token` overrides. Bad/missing
+  tokens are closed before any input task.
+- **Host**: max 4 clients; 15 s heartbeat watchdog; 10 s writer drain; helper
+  stdout 15 s first frame then 5 s; async input with backpressure; GOP
+  `need_keyframe`/`request_keyframe` recovery; greeting `ValueError` /
+  `LimitOverrunError` handling; `usb --watch` checks its return; prints the
+  tokenized USB/LAN string.
+- **Helper**: releases a held button on stdin EOF, SIGINT/SIGTERM, display
+  termination, SCK stop, stdout failure, and auto-exit; held state is atomic.
+- **App**: token parse before connect; `sockOut` only after the greeting; 5 s
+  heartbeat; `@Volatile sessionId` checks; Connect disabled while starting;
+  stale input queue cleared; decoder released on configure/start failure;
+  wait-for-keyframe after a feed failure; overlay tip routing; held-tip timer
+  reschedule; dead cursor/read code removed.
+- **Tools/docs**: selftest asserts both clients receive video and reports real
+  `SKIP`; testclient reads the token; lint `abortOnError false` removed;
+  Gradle wrapper uses Homebrew JDK when `JAVA_HOME` is unset; README updated.
+- **Verified**: selftest 8/8 (probe + live log), token accepted, app live over
+  USB at 3120×1440/90, cursor `visible=true` on the virtual display, host kept
+  the client past the 15 s watchdog.
+- **Pending (needs the physical pen)**: 25 s idle-off timer and held-tip
+  behavior. Do not mark these passed from `adb shell input stylus` — it is
+  ignored by this build.
+
+## Full-pipeline audit (previous pass)
 
 Instead of another round of whack-a-mole, the whole pipeline was read end to
 end, every found defect fixed at once, and a repeatable protocol suite added.
@@ -77,9 +105,11 @@ end, every found defect fixed at once, and a repeatable protocol suite added.
     stamps the up with the same state, and resets on a right click. Verified
     with a listen-only event tap: before `1,1`, after `1,1,2,2`.
 19. **Hub was exposed to the LAN** — `pdctl stream` bound `0.0.0.0` by default
-    and the protocol has no auth (it injects input). The default is now
-    `127.0.0.1`; adb reverse only needs the loopback. `lsof` confirms
-    `TCP 127.0.0.1:8420 (LISTEN)`.
+    and the protocol had no auth (it injects input). The default is now
+    `127.0.0.1`; adb reverse only needs the loopback. Every client must also
+    send `PD01 <token>` from `~/.phonedisplay-token` (0600; `--token`
+    overrides). `--bind 0.0.0.0` is opt-in and still token-gated. `lsof`
+    confirms `TCP 127.0.0.1:8420 (LISTEN)`.
 20. **Arrangement reset on every restart** — a random display serial made macOS
     treat each run as a brand-new monitor, so the user's layout (phone display
     on the left) reset every time. The serial is now derived from the display
@@ -90,10 +120,10 @@ end, every found defect fixed at once, and a repeatable protocol suite added.
 
 ## Audit test results
 
-- `tools/selftest.py` — **8/8**: handshake, static picture (keyframe + second
-  frame), GOP replay during motion (216 frames, 214 deltas), cursor heartbeat,
-  input round-trip exact (`(1593,456)`), live 60→90 fps, two clients, bad
-  greeting rejected.
+- `tools/selftest.py` — **8/8** with `--probe` and a live log: handshake,
+  static picture (keyframe + second frame), GOP replay during motion, cursor
+  heartbeat, input round-trip exact, live 60→90 fps, two clients (both receive
+  video), bad greeting rejected. Missing probe/log shows `SKIP`, not pass.
 - Cold start: first output **107–141 ms** after the greeting.
 - Rearrangement handling: after the live-bounds fix, input round-trip is exact
   at the current origin (`(1593,456)` = expected); bounds are no longer cached.
@@ -262,6 +292,9 @@ the stats line (0 during a 90 fps test), so queue backpressure is visible.
 cd ~/phonedisplay/host-macos
 nohup python3 pdctl.py stream --width 3120 --height 1440 --refresh 110 --fps 110 --bitrate 35 >> stream.log 2>&1 & disown
 ```
+
+The stream prints `USB: 127.0.0.1:8420#<token>`; the app's saved host must
+include `#<token>` (token file: `~/.phonedisplay-token`, 0600).
 
 If you are restarting it from an agent/tool shell that kills its process group
 when the command returns, detach it into a new session instead:

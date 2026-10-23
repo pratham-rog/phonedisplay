@@ -3,25 +3,34 @@
 Minimal PhoneDisplay protocol test client.
 
 This is exactly what the Android app will do, in Python:
-connect → send "PD01\\n" → read header line → read frames.
+connect → send "PD01 <token>\\n" → read header line → read frames.
 
-Usage: python3 testclient.py <host> [port] [seconds]
+Usage: python3 testclient.py <host> [port] [seconds] [token]
+The token defaults to ~/.phonedisplay-token.
 """
+import os
 import socket
 import struct
 import sys
 import time
 
 FRAME_HDR = struct.Struct(">IB")
+TOKEN_FILE = os.path.expanduser("~/.phonedisplay-token")
 
 
 def main() -> None:
     host = sys.argv[1] if len(sys.argv) > 1 else "127.0.0.1"
     port = int(sys.argv[2]) if len(sys.argv) > 2 else 8420
     secs = float(sys.argv[3]) if len(sys.argv) > 3 else 5.0
+    try:
+        token = sys.argv[4] if len(sys.argv) > 4 else open(TOKEN_FILE, encoding="ascii").read().strip()
+    except OSError:
+        sys.exit(f"no token: start pdctl stream once to create {TOKEN_FILE}")
+    if not token:
+        sys.exit(f"empty token file {TOKEN_FILE}")
 
     s = socket.create_connection((host, port), timeout=5)
-    s.sendall(b"PD01\n")
+    s.sendall(f"PD01 {token}\n".encode("ascii"))
     f = s.makefile("rb")
 
     hello = f.readline().decode().strip()

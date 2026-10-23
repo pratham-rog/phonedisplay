@@ -17,8 +17,7 @@ import kotlin.math.min
  * The host streams only the pointer's position (tiny cursor packets), so this
  * view can render the cursor at any size and at full frame rate, completely
  * independently of the video stream. [cursorScale] is the multiplier over the
- * Mac's native 12x19 px cursor; it is a plain property so a settings slider
- * can drive it later (call [setCursorScale]).
+ * Mac's native 12x19 px cursor (fixed at 3x).
  */
 class CursorView @JvmOverloads constructor(
     context: Context,
@@ -32,8 +31,7 @@ class CursorView @JvmOverloads constructor(
     }
 
     /** Arrow size multiplier. 1x = Mac-native size on a 1:1 stream. */
-    var cursorScale: Float = DEFAULT_SCALE
-        private set
+    val cursorScale: Float = DEFAULT_SCALE
 
     // classic macOS arrow, hotspot at (0,0), in 1x units
     private val arrow = Path().apply {
@@ -84,7 +82,6 @@ class CursorView @JvmOverloads constructor(
         postInvalidateOnAnimation()      // whole view; mode changes are rare
     }
 
-    @Suppress("unused") // used by the layout inflater and future settings UI
     fun setVideoSize(w: Int, h: Int) {
         videoW = w
         videoH = h
@@ -96,13 +93,6 @@ class CursorView @JvmOverloads constructor(
         cursorVisible = visible
         cx = x
         cy = y
-        invalidateUnion(old)
-    }
-
-    /** Future home of the size slider. */
-    fun setCursorScale(scale: Float) {
-        val old = dirtyRect()
-        cursorScale = scale
         invalidateUnion(old)
     }
 

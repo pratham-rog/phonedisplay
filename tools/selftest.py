@@ -30,24 +30,37 @@ import sys
 import time
 
 HDR = struct.Struct(">IB")
-RESULTS: list[tuple[str, bool, str]] = []
+RESULTS: list[tuple[str, bool | None, str]] = []
+TOKEN_FILE = os.path.expanduser("~/.phonedisplay-token")
+TOKEN = ""
 
 
-def check(name: str, ok: bool, detail: str = "") -> None:
+def check(name: str, ok: bool | None, detail: str = "") -> None:
     RESULTS.append((name, ok, detail))
-    mark = "PASS" if ok else "FAIL"
+    mark = "SKIP" if ok is None else "PASS" if ok else "FAIL"
     print(f"  [{mark}] {name}{(' — ' + detail) if detail else ''}")
 
 
+def load_token(explicit: str | None) -> str:
+    if explicit:
+        return explicit.strip()
+    try:
+        return open(TOKEN_FILE, encoding="ascii").read().strip()
+    except OSError:
+        return ""
+
+
 class Client:
-    def __init__(self, host: str, port: int, greeting: bytes = b"PD01\n",
+    def __init__(self, host: str, port: int, greeting: bytes | None = None,
                  timeout: float = 5.0) -> None:
+        if greeting is None:
+            greeting = f"PD01 {TOKEN}\n".encode("ascii")
         self.sock = socket.create_connection((host, port), timeout=timeout)
         self.sock.settimeout(timeout)
         self.sock.sendall(greeting)
         self.f = self.sock.makefile("rb")
         self.hello = ""
-        if greeting == b"PD01\n":
+        if greeting.startswith(b"PD01 "):
             line = self.f.readline().decode(errors="replace").strip()
             self.hello = line
             if not line.startswith("PD01 "):
@@ -132,12 +145,21 @@ def display_origin(probe: str):
 
 
 def main() -> int:
+    global TOKEN
     ap = argparse.ArgumentParser()
     ap.add_argument("--host", default="127.0.0.1")
     ap.add_argument("--port", type=int, default=8420)
+    ap.add_argument("--token", default=None,
+                    help=f"shared secret (default: {TOKEN_FILE})")
     ap.add_argument("--log", default=os.path.join("host-macos", "stream.log"))
     ap.add_argument("--probe", default=os.environ.get("PD_DISPLAYPROBE", ""))
     a = ap.parse_args()
+
+    TOKEN = load_token(a.token)
+    if not TOKEN:
+        print(f"no token in {TOKEN_FILE} — start `pdctl.py stream` once "
+              f"or pass --token")
+        return 1
 
     print(f"PhoneDisplay self-test → {a.host}:{a.port}\n")
 
@@ -168,7 +190,7 @@ def main() -> int:
     try:
         exe = os.path.join(os.path.dirname(os.path.abspath(__file__)), "vdfpswin")
         if not os.path.exists(exe):
-            check("GOP replay while moving", True, "skipped (tools/vdfpswin missing)")
+            check("GOP replay while moving", None, "skipped (tools/vdfpswin missing)")
         else:
             vdf = subprocess.Popen([exe], stdout=subprocess.DEVNULL,
                                    stderr=subprocess.DEVNULL)
@@ -230,30 +252,34 @@ def main() -> int:
         except Exception as e:                                # noqa: BLE001
             check("input round-trip", False, str(e))
     else:
-        check("input round-trip", True, "skipped (no --probe)")
+        check("input round-trip", None, "skipped (no --probe)")
 
     # 6 — fps control (60 → applied → 90) ----------------------------------
-    try:
-        off = os.path.getsize(a.log) if os.path.exists(a.log) else 0
-        c = Client(a.host, a.port)
-        c.control(1, 60)
-        time.sleep(0.8)
-        with open(a.log, "rb") as f:
-            f.seek(off)
-            tail = f.read().decode(errors="replace")
-        ok60 = "capture rate → 60 fps" in tail
-        off = os.path.getsize(a.log)
-        c.control(1, 90)
-        time.sleep(0.8)
-        with open(a.log, "rb") as f:
-            f.seek(off)
-            tail = f.read().decode(errors="replace")
-        ok90 = "capture rate → 90 fps" in tail
-        check("fps control 60/90", ok60 and ok90,
-              f"60={ok60} 90={ok90}")
-        c.close()
-    except Exception as e:                                    # noqa: BLE001
-        check("fps control 60/90", False, str(e))
+    if not os.path.exists(a.log):
+        check("fps control 60/90", None,
+              f"skipped (no {a.log}; run `pdctl.py stream > {a.log} 2>&1`)")
+    else:
+        try:
+            off = os.path.getsize(a.log)
+            c = Client(a.host, a.port)
+            c.control(1, 60)
+            time.sleep(0.8)
+            with open(a.log, "rb") as f:
+                f.seek(off)
+                tail = f.read().decode(errors="replace")
+            ok60 = "capture rate → 60 fps" in tail
+            off = os.path.getsize(a.log)
+            c.control(1, 90)
+            time.sleep(0.8)
+            with open(a.log, "rb") as f:
+                f.seek(off)
+                tail = f.read().decode(errors="replace")
+            ok90 = "capture rate → 90 fps" in tail
+            check("fps control 60/90", ok60 and ok90,
+                  f"60={ok60} 90={ok90}")
+            c.close()
+        except Exception as e:                                # noqa: BLE001
+            check("fps control 60/90", False, str(e))
 
     # 7 — two clients concurrently -----------------------------------------
     try:
@@ -261,7 +287,7 @@ def main() -> int:
         c2 = Client(a.host, a.port)
         v1 = len(video(c1.collect(0.8)))
         v2 = len(video(c2.collect(0.8)))
-        check("two clients", True, f"{v1} / {v2} video packets")
+        check("two clients", v1 > 0 and v2 > 0, f"{v1} / {v2} video packets")
         c1.close()
         c2.close()
     except Exception as e:                                    # noqa: BLE001
@@ -279,8 +305,13 @@ def main() -> int:
     except Exception as e:                                    # noqa: BLE001
         check("bad greeting rejected", False, str(e))
 
-    failed = [n for n, ok, _ in RESULTS if not ok]
-    print(f"\n{len(RESULTS) - len(failed)}/{len(RESULTS)} checks passed")
+    failed = [n for n, ok, _ in RESULTS if ok is False]
+    skipped = [n for n, ok, _ in RESULTS if ok is None]
+    passed = len(RESULTS) - len(failed) - len(skipped)
+    extra = f" ({len(skipped)} skipped)" if skipped else ""
+    print(f"\n{passed}/{len(RESULTS)} checks passed{extra}")
+    if skipped:
+        print("SKIPPED: " + ", ".join(skipped))
     if failed:
         print("FAILED: " + ", ".join(failed))
     return 1 if failed else 0

@@ -5,7 +5,7 @@
     <string name="ready">ready — tap Connect</string>
     <string name="no_surface">waiting for display surface…</string>
     <string name="stream_ended">stream ended, reconnecting…</string>
-    <string name="hint">host:port — USB: 127.0.0.1:8420</string>
+    <string name="hint">host:port#token — USB: 127.0.0.1:8420#token</string>
     <string name="fps60">60</string>
     <string name="fps90">90</string>
 </resources>

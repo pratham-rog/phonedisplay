@@ -65,9 +65,10 @@ python3 pdctl.py display --width 2400 --height 1080 --hidpi
 
 ```sh
 python3 pdctl.py stream            # virtual monitor + H.264 over TCP :8420
+# prints: USB: 127.0.0.1:8420#<token>  (token file: ~/.phonedisplay-token, 0600)
 
 # verify from the Mac itself (exactly what the phone app speaks):
-python3 ../tools/testclient.py 127.0.0.1
+python3 ../tools/testclient.py 127.0.0.1   # reads the same token file
 
 # or pipe one stream to a file and play it:
 ./vdhelper --stream --seconds 10 > out.bin    # (parsed by pdctl; raw test below)
@@ -106,6 +107,7 @@ the selector can cap below.
 ```sh
 cd android
 ./gradlew assembleDebug        # → app/build/outputs/apk/debug/app-debug.apk
+# the wrapper uses Homebrew's openjdk@17 when JAVA_HOME is unset
 
 # install once the phone is connected (see one-time setup below):
 ~/Library/Android/sdk/platform-tools/adb install -r app/build/outputs/apk/debug/app-debug.apk
@@ -122,15 +124,18 @@ python3 pdctl.py usb --watch   # optional: keeps the tunnel armed across replugs
 python3 pdctl.py stream        # add --synthetic for a test pattern
 ```
 
-Open **PhoneDisplay** on the phone (it already suggests `127.0.0.1:8420`) and
-tap Connect — or do nothing: the app auto-connects on launch. `adb reverse`
-tunnels that port over the USB cable to the Mac.
+Paste the printed string — **`127.0.0.1:8420#<token>`** — into the app once and
+tap Connect. The bare `127.0.0.1:8420` is rejected. The app remembers the
+string; `adb reverse` tunnels that port over USB to the Mac. `--token` overrides
+the token file.
 
 ### Wi-Fi mode
 
-`python3 pdctl.py stream` prints the Mac's address (e.g. `172.29.204.21:8420`).
-Type it into the app and connect. Same network required; USB is faster and more
-stable.
+Start with `--bind 0.0.0.0`; the stream prints the Mac's address with the token
+(e.g. `172.29.204.21:8420#<token>`). Paste that whole string into the app. Same
+network required; USB is faster and more stable. The token is required on Wi-Fi
+too, but anyone who can reach the port can still try to guess it — use USB if
+you don't trust the network.
 
 ### One-time phone setup
 
@@ -248,10 +253,12 @@ window drags, video) flows at up to the configured rate. `tools/vdfpswin`
   and distance between taps: first down/up = 1, second = 2, third = 3 (so
   double- and triple-click work; a right click resets the sequence). If clicks
   "stop working" after a code change, check this first.
-- **The hub is localhost-only by default.** `pdctl stream` binds `127.0.0.1`;
+- **Token-gated, localhost by default.** `pdctl stream` binds `127.0.0.1`;
   the USB path only needs that (adb reverse connects on the Mac's loopback).
-  `--bind 0.0.0.0` is for Wi-Fi experiments, but the protocol has no
-  authentication, so anyone who can reach the port can inject input.
+  The first run creates `~/.phonedisplay-token` (0600), and every client must
+  send `PD01 <token>`; the app gets it from `host:port#token`. `--token`
+  overrides the file. `--bind 0.0.0.0` is for Wi-Fi and still requires the
+  token. Don't paste `stream.log` anywhere — it contains the token.
 - **First picture on connect (and last picture at rest).** Two decoder facts
   shape this:
   (a) a new client is sent the cached **GOP** — the last keyframe *plus every
@@ -271,11 +278,10 @@ window drags, video) flows at up to the configured rate. `tools/vdfpswin`
   The helper streams tiny cursor packets (~16 bytes, ~60/s while the pointer
   moves, 1/s heartbeat when idle) and the app draws its own pointer at that
   position — so the cursor stays smooth and cheap regardless of the video, and
-  it's drawn at **3× the Mac size** by default for comfortable visibility.
-  Size is a single value in the app (`CursorView.DEFAULT_SCALE`,
-  `cursorScale`, `setCursorScale()`), ready to be hooked up to a settings
-  slider later. To go back to the classic baked-in 1× cursor instead, run the
-  helper with `--hw-cursor` (pdctl doesn't expose the flag).
+  it's drawn at **3× the Mac size** (`CursorView.DEFAULT_SCALE`; fixed). To go
+  back to the classic baked-in 1× cursor instead, run the helper directly with
+  `--hw-cursor` (pdctl doesn't expose it). That mode has no cursor heartbeat,
+  so don't combine it with pdctl's 5 s helper-stdout liveness.
 - **Idle = silence, but no disruption**: ScreenCaptureKit only emits frames
   when the virtual display's content changes. While idle the phone simply
   keeps showing the last frame and the session stays up — when something
@@ -300,14 +306,18 @@ window drags, video) flows at up to the configured rate. `tools/vdfpswin`
   connected through these restarts (verified: both a helper restart and a full
   pdctl restart recover the display and picture on the same TCP session). If
   pdctl itself dies, the helper sees stdin EOF and removes the virtual display
-  instead of leaving a phantom monitor. A client that stops reading for 10 s is
-  dropped, so a sleeping phone cannot keep the display alive forever; a
-  disconnect while the pen button is held releases the mouse button.
+  instead of leaving a phantom monitor. A client that stops reading for 10 s,
+  or sends no heartbeat for 15 s, is dropped, so a sleeping phone cannot keep
+  the display alive forever; a disconnect while the pen button is held releases
+  the mouse button. A helper that produces no stdout for 5 s (15 s for its
+  first frame) is restarted.
 - **Self-test**: `python3 tools/selftest.py --probe <path-to-displayprobe>
   --log host-macos/stream.log` exercises the host protocol end to end:
   handshake, static picture, GOP replay during motion, cursor heartbeat, input
   round-trip, live 60/90 fps change, two clients, and bad-greeting rejection.
-  All 8 checks pass.
+  All 8 pass with `--probe` and a live stream log; missing inputs show `SKIP`
+  (not a pass). The two-client check asserts both clients actually receive
+  video. Token comes from `~/.phonedisplay-token` or `--token`.
 - **Pixel-perfect on the S24 Ultra**: the phone app draws edge-to-edge,
   including the camera-cutout band, so a 3120×1440 stream maps 1:1 onto the
   physical screen — no black strip, no scaling.
@@ -336,7 +346,7 @@ window drags, video) flows at up to the configured rate. `tools/vdfpswin`
 
 ```
 TCP, port 8420; handshake:
-  phone → host : "PD01\n"
+  phone → host : "PD01 <token>\n"
   host  → phone: "PD01 <width> <height> <fps> <codec>\n"
   then  : repeated packets, in both directions:
             uint32_be length

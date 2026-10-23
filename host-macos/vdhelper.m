@@ -136,6 +136,7 @@ static BOOL writeAll(int fd, const void *bytes, size_t len)
                        fps:(uint32_t)fps
                bitrateMbps:(double)mbps;
 - (void)ensureTargetMode;
+- (void)releaseHeldButton;
 @end
 
 // Pen taps arrive as independent down/up commands, so the helper has to
@@ -194,7 +195,8 @@ static CFTimeInterval doubleClickInterval(void)
     BOOL _lastCursorVisible;
     int32_t _lastCursorX, _lastCursorY;
     CFTimeInterval _lastCursorSentAt;
-    int _heldButton;          // -1 = none, 0 = left, 1 = right (input injection)
+    _Atomic(int) _heldButton; // -1 = none, 0 = left, 1 = right (input injection)
+    CGPoint _lastPoint;       // last injected position, for the exit release
     int _leftClickCount;      // 1 = single, 2 = double, 3 = triple
     CFAbsoluteTime _lastLeftDownAt;
     CGPoint _lastLeftDownPoint;
@@ -296,6 +298,7 @@ static void vtOutputCallback(void *refcon, void *sourceRefCon,
     pthread_mutex_unlock(&_outLock);
 
     if (!ok) {
+        [self releaseHeldButton];
         fprintf(stderr, "stdout write failed — consumer gone, exiting\n");
         exit(0);
     }
@@ -353,6 +356,7 @@ static void vtOutputCallback(void *refcon, void *sourceRefCon,
     BOOL ok = writeAll(_outFd, hdr, 5) && writeAll(_outFd, payload, 9);
     pthread_mutex_unlock(&_outLock);
     if (!ok) {
+        [self releaseHeldButton];
         fprintf(stderr, "stdout write failed — consumer gone, exiting\n");
         exit(0);
     }
@@ -465,6 +469,7 @@ static void vtOutputCallback(void *refcon, void *sourceRefCon,
     if (y >= (int)_vdHeight) y = (int)_vdHeight - 1;
     CGRect vb = CGDisplayBounds(_vdDisplayID);   // follows arrangement changes
     CGPoint pt = CGPointMake(vb.origin.x + x, vb.origin.y + y);
+    _lastPoint = pt;
 
     CGEventType type;
     int button;                       // 0 = left, 1 = right
@@ -531,6 +536,23 @@ static void vtOutputCallback(void *refcon, void *sourceRefCon,
     }
 }
 
+- (void)releaseHeldButton
+{
+    int button = atomic_exchange(&_heldButton, -1);
+    if (button < 0) return;
+    fprintf(stderr, "input: releasing held %s button\n", button ? "right" : "left");
+    if (!CGPreflightPostEventAccess()) return;
+    CGEventRef ev = CGEventCreateMouseEvent(
+        NULL, button ? kCGEventRightMouseUp : kCGEventLeftMouseUp,
+        _lastPoint, button ? kCGMouseButtonRight : kCGMouseButtonLeft);
+    if (!ev) return;
+    CGEventSetIntegerValueField(ev, kCGMouseEventClickState,
+                                button == 0 ? MAX(1, _leftClickCount) : 1);
+    CGEventPost(kCGHIDEventTap, ev);
+    CFRelease(ev);
+    usleep(50 * 1000);   // give WindowServer a moment to deliver the up
+}
+
 #pragma mark SCStreamOutput / SCStreamDelegate
 
 - (void)stream:(SCStream *)stream
@@ -575,6 +597,7 @@ static void vtOutputCallback(void *refcon, void *sourceRefCon,
 
 - (void)stream:(SCStream *)stream didStopWithError:(NSError *)error
 {
+    [self releaseHeldButton];
     fprintf(stderr, "SCK stream stopped: %s\n", error.localizedDescription.UTF8String);
     exit(6);
 }
@@ -970,6 +993,7 @@ int main(int argc, const char *argv[])
 
         desc.queue = dispatch_get_main_queue();
         desc.terminationHandler = ^(id d) {
+            if (gStreamer) [gStreamer releaseHeldButton];
             fprintf(gLog, "virtual display terminated by system\n");
             exit(7);   // pdctl sees the exit and recreates the display
         };
@@ -1038,6 +1062,7 @@ int main(int argc, const char *argv[])
                     if (n <= 0) {
                         // pdctl is gone (closed its end of the pipe, or died).
                         // Do not linger as a phantom display: remove it now.
+                        if (gStreamer) [gStreamer releaseHeldButton];
                         fprintf(stderr, "stdin closed — host gone, exiting\n");
                         exit(0);
                     }
@@ -1071,17 +1096,28 @@ int main(int argc, const char *argv[])
         signal(SIGPIPE, SIG_IGN);
 
         dispatch_source_t sigint = dispatch_source_create(DISPATCH_SOURCE_TYPE_SIGNAL, SIGINT, 0, dispatch_get_main_queue());
-        dispatch_source_set_event_handler(sigint, ^{ fprintf(gLog, "\nsignal: removing display\n"); exit(0); });
+        dispatch_source_set_event_handler(sigint, ^{
+            if (gStreamer) [gStreamer releaseHeldButton];
+            fprintf(gLog, "\nsignal: removing display\n");
+            exit(0);
+        });
         dispatch_resume(sigint);
 
         dispatch_source_t sigterm = dispatch_source_create(DISPATCH_SOURCE_TYPE_SIGNAL, SIGTERM, 0, dispatch_get_main_queue());
-        dispatch_source_set_event_handler(sigterm, ^{ fprintf(gLog, "\nsignal: removing display\n"); exit(0); });
+        dispatch_source_set_event_handler(sigterm, ^{
+            if (gStreamer) [gStreamer releaseHeldButton];
+            fprintf(gLog, "\nsignal: removing display\n");
+            exit(0);
+        });
         dispatch_resume(sigterm);
 
         if (seconds > 0) {
             fprintf(gLog, "will exit automatically in %d seconds\n", seconds);
             dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)seconds * NSEC_PER_SEC),
-                           dispatch_get_main_queue(), ^{ exit(0); });
+                           dispatch_get_main_queue(), ^{
+                               if (gStreamer) [gStreamer releaseHeldButton];
+                               exit(0);
+                           });
         } else {
             fprintf(gLog, "holding — press Ctrl-C to stop\n");
         }

@@ -31,12 +31,13 @@ import java.net.InetSocketAddress
 import java.net.Socket
 import java.net.SocketTimeoutException
 import java.nio.ByteBuffer
+import java.util.concurrent.TimeUnit
 
 /**
  * PhoneDisplay — turns this phone into a second monitor for the Mac.
  *
  * Speaks the PD01 protocol (see project README):
- *   → "PD01\n"            handshake request
+ *   → "PD01 <token>\n"    handshake request
  *   ← "PD01 w h fps h264\n"
  *   ← [u32 len][u8 flags][Annex-B H.264 access unit] ...video
  *   ← [u32 len][u8 flags 0x02][u8 visible|i32be x|i32be y] ...cursor
@@ -74,6 +75,7 @@ class MainActivity : Activity(), SurfaceHolder.Callback {
     private lateinit var overlay: View
     private lateinit var hostField: EditText
     private lateinit var statusView: TextView
+    private lateinit var connectButton: Button
     private lateinit var fpsPill: LinearLayout
     private lateinit var fps60View: TextView
     private lateinit var fps90View: TextView
@@ -91,7 +93,7 @@ class MainActivity : Activity(), SurfaceHolder.Callback {
     // Every startStreaming() bumps this; threads from an older session see a
     // mismatch and bow out, so two stream loops can never fight over the socket.
     private val sessionLock = Any()
-    private var sessionId = 0
+    @Volatile private var sessionId = 0
 
     // ------------------------------------------------------- S-Pen mode
 
@@ -115,7 +117,13 @@ class MainActivity : Activity(), SurfaceHolder.Callback {
 
     /** Fallback: if the Samsung detach broadcast never arrives, pen mode from
      *  stylus activity alone turns itself off after this much stylus silence. */
-    private val penIdleOff = Runnable { setPenMode(false, "stylus idle") }
+    private val penIdleOff: Runnable = object : Runnable {
+        override fun run() {
+            // A long held stroke must not be interrupted by the idle fallback.
+            if (heldButton >= 0) mainHandler.postDelayed(this, PEN_FALLBACK_IDLE_MS)
+            else setPenMode(false, "stylus idle")
+        }
+    }
 
     private val penReceiver = object : BroadcastReceiver() {
         override fun onReceive(context: Context, intent: Intent) {
@@ -194,6 +202,12 @@ class MainActivity : Activity(), SurfaceHolder.Callback {
         val tool = if (idx in 0 until ev.pointerCount) ev.getToolType(idx) else -1
         val fromPen = ev.isFromSource(InputDevice.SOURCE_STYLUS) ||
                 tool == MotionEvent.TOOL_TYPE_STYLUS || tool == MotionEvent.TOOL_TYPE_ERASER
+        val tip = action == MotionEvent.ACTION_DOWN || action == MotionEvent.ACTION_MOVE ||
+                action == MotionEvent.ACTION_UP || action == MotionEvent.ACTION_CANCEL
+
+        // The connect/settings screen must stay usable with either input:
+        // its tip gestures belong to the views, not to the Mac.
+        if (overlay.visibility == View.VISIBLE && tip) return false
 
         // Fingers: ignored (fully) while the pen controls the Mac.
         val active = penMode && sockOut != null
@@ -204,8 +218,6 @@ class MainActivity : Activity(), SurfaceHolder.Callback {
         // The fps HUD must stay reachable with the pen: a *tip* gesture that
         // starts inside the hotspot/pill goes to the views, not the Mac.
         // Hover still moves the pointer, so only tip events are diverted.
-        val tip = action == MotionEvent.ACTION_DOWN || action == MotionEvent.ACTION_MOVE ||
-                action == MotionEvent.ACTION_UP || action == MotionEvent.ACTION_CANCEL
         if (action == MotionEvent.ACTION_DOWN) hudGesture = inFpsUi(ev.rawX, ev.rawY)
         if (hudGesture && tip) {
             if (action == MotionEvent.ACTION_UP || action == MotionEvent.ACTION_CANCEL)
@@ -371,8 +383,8 @@ class MainActivity : Activity(), SurfaceHolder.Callback {
 
     /**
      * Control packet → host: u32 len | u8 flags (0x08) | u8 cmd | u8 arg.
-     * cmd 1 = capture frame-rate cap. Goes through the same queue as input
-     * (never touch the socket on the UI thread).
+     * cmd 1 = capture frame-rate cap; cmd 2 = heartbeat. Goes through the same
+     * queue as input (never touch the socket on the UI thread).
      */
     private fun sendControl(cmd: Int, arg: Int) {
         val rec = byteArrayOf(0, 0, 0, 2, 0x08, cmd.toByte(), arg.toByte())
@@ -382,13 +394,17 @@ class MainActivity : Activity(), SurfaceHolder.Callback {
         }
     }
 
-    /** Drains queued input packets to the current session socket. */
+    /** Drains queued input packets; sends a heartbeat every 5 s when idle. */
     private fun inputSenderLoop() {
         while (true) {
             val rec = try {
-                inputQueue.take()
+                inputQueue.poll(5, TimeUnit.SECONDS)
             } catch (_: InterruptedException) {
                 break
+            }
+            if (rec == null) {
+                if (sockOut != null) sendControl(2, 0)
+                continue
             }
             val out = sockOut ?: continue                 // not connected: drop
             synchronized(outLock) {
@@ -435,7 +451,7 @@ class MainActivity : Activity(), SurfaceHolder.Callback {
         fps60View = findViewById(R.id.fps60)
         fps90View = findViewById(R.id.fps90)
         fpsHotspot = findViewById(R.id.fpsHotspot)
-        val connectButton: Button = findViewById(R.id.connect)
+        connectButton = findViewById(R.id.connect)
 
         val prefs = getSharedPreferences("pd", MODE_PRIVATE)
         hostField.setText(prefs.getString("host", DEFAULT_ADDR) ?: DEFAULT_ADDR)
@@ -498,10 +514,15 @@ class MainActivity : Activity(), SurfaceHolder.Callback {
         // Invalidate any previous worker first, even if we cannot start a new
         // one: an old loop must never keep the old session alive.
         val id = synchronized(sessionLock) { ++sessionId }
+        connectButton.isEnabled = false
         running = false
+        sockOut = null
+        heldButton = -1
+        inputQueue.clear()               // drop stale pen packets from the old link
         try { socket?.close() } catch (_: Exception) {}   // wake a blocked old worker
         worker?.interrupt()
         if (surface == null) {
+            connectButton.isEnabled = true
             setStatus(getString(R.string.no_surface))
             return
         }
@@ -513,6 +534,7 @@ class MainActivity : Activity(), SurfaceHolder.Callback {
         while (running && id == sessionId) {
             try {
                 runSession(addr, id)
+                if (!running || id != sessionId) break
                 setStatus(getString(R.string.stream_ended))
             } catch (e: Exception) {
                 if (!running || id != sessionId) break
@@ -520,11 +542,15 @@ class MainActivity : Activity(), SurfaceHolder.Callback {
                 setStatus("retrying in 3 s — ${e.message}")
             }
             runOnUiThread {
+                if (id != sessionId) return@runOnUiThread
                 overlay.visibility = View.VISIBLE
+                connectButton.isEnabled = true
                 revealPill(autoHide = false)     // connect screen: pill available
             }
-            cursorView.updateFromStream(false, 0f, 0f)
-            if (id == sessionId) sockOut = null
+            if (id == sessionId) {
+                cursorView.updateFromStream(false, 0f, 0f)
+                sockOut = null
+            }
             if (!running || id != sessionId) break
             try {
                 Thread.sleep(3_000)
@@ -535,31 +561,36 @@ class MainActivity : Activity(), SurfaceHolder.Callback {
     }
 
     private fun runSession(addr: String, id: Int) {
-        val host = addr.substringBefore(":").ifBlank { "127.0.0.1" }
-        val port = addr.substringAfter(":", "8420").toIntOrNull() ?: 8420
+        val hash = addr.lastIndexOf('#')
+        val token = if (hash >= 0) addr.substring(hash + 1) else ""
+        val hostPort = if (hash >= 0) addr.substring(0, hash) else addr
+        val host = hostPort.substringBefore(":").ifBlank { "127.0.0.1" }
+        val port = hostPort.substringAfter(":", "8420").toIntOrNull() ?: 8420
+        if (token.isBlank())
+            throw IOException("missing #token — paste host:port#token from pdctl stream")
 
         setStatus("connecting to $host:$port …")
         Socket().use { sock ->
             socket = sock
             sock.tcpNoDelay = true
             sock.connect(InetSocketAddress(host, port), CONNECT_TIMEOUT_MS)
+            if (!running || id != sessionId) return
 
             val input = BufferedInputStream(sock.getInputStream(), 1 shl 20)
             val out = sock.getOutputStream()
 
             sock.soTimeout = GREETING_TIMEOUT_MS
             // The greeting must hit the wire *before* the input sender may use
-            // this socket, or a pen packet could precede "PD01\n" and desync
-            // the host's input stream.
+            // this socket, or a pen packet could precede the handshake.
             synchronized(outLock) {
-                out.write("PD01\n".toByteArray(Charsets.US_ASCII))
+                out.write("PD01 $token\n".toByteArray(Charsets.US_ASCII))
                 out.flush()
             }
-            sockOut = out
 
             val hello = readLine(input) ?: throw IOException("no greeting from host")
             val parts = hello.trim().split(" ")
             if (parts.size < 5 || parts[0] != "PD01") throw IOException("bad greeting: $hello")
+            if (!running || id != sessionId) return
             val width = parts[1].toInt()
             val height = parts[2].toInt()
             val fps = parts[3].toInt()
@@ -568,10 +599,11 @@ class MainActivity : Activity(), SurfaceHolder.Callback {
             Log.i(TAG, "stream $width x $height @ $fps")
             setStatus("streaming ${width}x$height @ $fps")
             cursorView.setVideoSize(width, height)
+            sockOut = out              // only after the host accepted the token
             sendControl(1, chosenFps)     // apply the app's frame-rate choice
 
             sock.soTimeout = FRAME_TIMEOUT_MS
-            decodeLoop(input, width, height, fps)
+            decodeLoop(input, width, height, fps, id)
         }
         if (id == sessionId) {
             socket = null
@@ -581,7 +613,7 @@ class MainActivity : Activity(), SurfaceHolder.Callback {
 
     // ------------------------------------------------------ decoding
 
-    private fun decodeLoop(input: InputStream, width: Int, height: Int, fps: Int) {
+    private fun decodeLoop(input: InputStream, width: Int, height: Int, fps: Int, id: Int) {
         var decoder: MediaCodec? = null
         var frameIndex = 0L
         var dropped = 0L
@@ -591,11 +623,12 @@ class MainActivity : Activity(), SurfaceHolder.Callback {
         var lastLen = 0
         var lastPts = 0L
         var nudges = 0
+        var waitForKeyframe = false
         var statsAt = android.os.SystemClock.elapsedRealtime()
         var statsFrames = 0L
 
         try {
-            while (running) {
+            while (running && id == sessionId) {
                 val hdr = readFrameHeader(input) ?: break
                 if (hdr.isEmpty()) {
                     // Idle tick: nothing arrived within the read timeout. Let
@@ -646,8 +679,20 @@ class MainActivity : Activity(), SurfaceHolder.Callback {
                     Log.i(TAG, "decoder started")
                 }
 
+                if (waitForKeyframe && !keyframe) {
+                    dropped++
+                    continue
+                }
                 val ptsUs = frameIndex * 1_000_000L / fps
-                if (!feedDecoder(decoder, au, length, ptsUs)) dropped++
+                if (!feedDecoder(decoder, au, length, ptsUs)) {
+                    // A hole in the delta chain cannot be repaired by feeding
+                    // more deltas; wait for the next keyframe.
+                    dropped++
+                    waitForKeyframe = true
+                    lastAu = null
+                    continue
+                }
+                waitForKeyframe = false
                 frameIndex++
                 nudges = 0
                 if (lastAu == null || lastAu.size < length) lastAu = ByteArray(length)
@@ -723,8 +768,14 @@ class MainActivity : Activity(), SurfaceHolder.Callback {
         format.setByteBuffer("csd-1", ByteBuffer.wrap(pps))
 
         val decoder = MediaCodec.createDecoderByType(MediaFormat.MIMETYPE_VIDEO_AVC)
-        decoder.configure(format, surface, null, 0)
-        decoder.start()
+        try {
+            decoder.configure(format, surface, null, 0)
+            decoder.start()
+        } catch (e: Exception) {
+            try { decoder.release() } catch (_: Exception) {}
+            Log.w(TAG, "decoder configure/start failed", e)
+            return null
+        }
         return decoder
     }
 
@@ -787,11 +838,6 @@ class MainActivity : Activity(), SurfaceHolder.Callback {
             if (b != '\r'.code) sb.append(b.toChar())
             if (sb.length > 512) return sb.toString()
         }
-    }
-
-    private fun readExact(input: InputStream, n: Int): ByteArray? {
-        val out = ByteArray(n)
-        return if (readExactInto(input, out, n)) out else null
     }
 
     /**

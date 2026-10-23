@@ -10,7 +10,7 @@ Drives the native helper (vdhelper):
 
 Default listen port: 8420 (TCP).
 
-The phone connects, sends "PD01\n", gets back "PD01 <w> <h> <fps> h264\n",
+The phone connects, sends "PD01 <token>\n", gets back "PD01 <w> <h> <fps> h264\n",
 then receives length-prefixed Annex-B H.264 frames until disconnect.
 
 The link is bidirectional: the phone may send its own framed packets
@@ -21,7 +21,9 @@ import argparse
 import asyncio
 import contextlib
 import ctypes
+import hmac
 import os
+import secrets
 import shutil
 import socket
 import struct
@@ -38,6 +40,27 @@ if os.path.exists(_APP_HELPER):
     HELPER = _APP_HELPER
 
 FRAME_HDR = struct.Struct(">IB")   # uint32 length | uint8 flags
+TOKEN_FILE = os.path.expanduser("~/.phonedisplay-token")
+
+
+def load_token(explicit: str | None = None) -> str:
+    """Shared secret for the input-injection link; generated once at 0600."""
+    if explicit:
+        return explicit.strip()
+    try:
+        with open(TOKEN_FILE, encoding="ascii") as f:
+            token = f.read().strip()
+    except FileNotFoundError:
+        token = ""
+    if not token:
+        token = secrets.token_urlsafe(24)
+        fd = os.open(TOKEN_FILE, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        with os.fdopen(fd, "w", encoding="ascii") as f:
+            f.write(token + "\n")
+    else:
+        with contextlib.suppress(OSError):
+            os.chmod(TOKEN_FILE, 0o600)
+    return token
 
 # --- display-mode watchdog -------------------------------------------------
 # CoreGraphics refreshes a process's display cache through its run loop. The
@@ -191,9 +214,13 @@ def usb_watch(adb: str, port: int) -> int:
                 cur = subprocess.run([adb, "reverse", "--list"],
                                      capture_output=True, text=True).stdout
                 if want not in cur:
-                    subprocess.run([adb, "reverse", want.split()[0], want.split()[1]],
-                                   check=False)
-                    print(f"    tunnel armed:  127.0.0.1:{port} → Mac:{port}", flush=True)
+                    r = subprocess.run([adb, "reverse", want.split()[0], want.split()[1]],
+                                       capture_output=True, text=True)
+                    if r.returncode == 0:
+                        print(f"    tunnel armed:  127.0.0.1:{port} → Mac:{port}", flush=True)
+                    else:
+                        print(f"[!] tunnel arm failed: {r.stderr.strip() or r.stdout.strip()}",
+                              flush=True)
 
             time.sleep(2)
     except KeyboardInterrupt:
@@ -262,9 +289,16 @@ def cmd_display(args) -> int:
 class Hub:
     """Distributes framed H.264 to all connected phones."""
 
-    def __init__(self) -> None:
+    MAX_CLIENTS = 4
+    CLIENT_SILENCE = 15.0
+
+    def __init__(self, token: str) -> None:
+        self.token = token
         self.clients: dict[asyncio.StreamWriter, asyncio.Queue] = {}
         self.not_ready: set[asyncio.StreamWriter] = set()  # handshake in progress
+        self.need_keyframe: set[asyncio.StreamWriter] = set()
+        self.client_state: dict[asyncio.StreamWriter, dict] = {}
+        self.keyframe_requested = False
         self.header_line = b""
         self.header_ready = asyncio.Event()     # a helper session is up
         self.idle_stopped = False               # helper stopped: nobody watching
@@ -283,6 +317,8 @@ class Hub:
         self.gop = []
         self.gop_bytes = 0
         self.last_cursor = None
+        self.need_keyframe.clear()
+        self.keyframe_requested = False
 
     def remember_frame(self, packet: bytes, keyframe: bool) -> None:
         """Keep the newest GOP so a client that connects now sees the exact
@@ -299,41 +335,60 @@ class Hub:
                 self.gop = []
                 self.gop_bytes = 0
 
+    def _drop_client(self, writer: asyncio.StreamWriter) -> None:
+        """Remove a client and wake its video loop; idempotent."""
+        q = self.clients.pop(writer, None)
+        self.not_ready.discard(writer)
+        self.need_keyframe.discard(writer)
+        self.client_state.pop(writer, None)
+        if q is not None:
+            with contextlib.suppress(asyncio.QueueFull):
+                q.put_nowait(None)          # sentinel: stop the live loop
+        with contextlib.suppress(Exception):
+            writer.close()
+
     async def handle_client(self, reader: asyncio.StreamReader,
                             writer: asyncio.StreamWriter) -> None:
         peer = writer.get_extra_info("peername")
         try:
             greeting = await asyncio.wait_for(reader.readline(), timeout=5)
-        except asyncio.TimeoutError:
+        except (asyncio.TimeoutError, ValueError, asyncio.LimitOverrunError):
             writer.close()
             return
-        if not greeting.strip().startswith(b"PD01"):
-            print(f"[-] {peer[0]}:{peer[1]} sent a bad greeting {greeting[:32]!r}",
-                  flush=True)
+        parts = greeting.strip().split()
+        if (len(parts) != 2 or parts[0] != b"PD01" or
+                not hmac.compare_digest(parts[1], self.token.encode())):
+            print(f"[-] {peer[0]}:{peer[1]} sent a bad greeting", flush=True)
+            writer.close()
+            return
+        if len(self.clients) >= self.MAX_CLIENTS:
+            print(f"[-] {peer[0]}:{peer[1]} rejected: "
+                  f"{self.MAX_CLIENTS} clients already connected", flush=True)
             writer.close()
             return
         print(f"[+] {peer[0]}:{peer[1]} connected", flush=True)
 
         q: asyncio.Queue = asyncio.Queue(maxsize=48)
+        state = {"held": -1, "x": 0, "y": 0, "last_seen": time.monotonic()}
         self.clients[writer] = q      # wakes the session loop: start the display
+        self.client_state[writer] = state
         self.not_ready.add(writer)    # no live frames queued until the GOP is out
+
+        # Input and heartbeat must be read before the picture handshake: a
+        # client waiting for the display must not look dead.
+        input_task = asyncio.create_task(
+            self._client_inputs(reader, writer, peer, state))
+        watchdog = asyncio.create_task(self._client_watchdog(writer, state))
         try:
             # the virtual display is created on demand, give the helper a moment
-            await asyncio.wait_for(self.header_ready.wait(), timeout=30)
+            await asyncio.wait_for(self.header_ready.wait(), timeout=15)
         except asyncio.TimeoutError:
-            self.not_ready.discard(writer)
-            self.clients.pop(writer, None)
             print(f"[-] {peer[0]}:{peer[1]} gave up waiting for the stream to start")
-            try:
-                writer.close()
-            except Exception:
-                pass
+            input_task.cancel()
+            watchdog.cancel()
+            self._drop_client(writer)
             return
 
-        # Start reading the phone's packets *before* the picture handshake:
-        # pen input must never be blocked by the client reading (or not
-        # reading) the cached video frames.
-        input_task = asyncio.create_task(self._client_inputs(reader, peer))
         try:
             writer.write(self.header_line)
             sent = 0
@@ -348,12 +403,8 @@ class Hub:
             await asyncio.wait_for(writer.drain(), timeout=10)
         except (ConnectionError, asyncio.TimeoutError, asyncio.CancelledError):
             input_task.cancel()
-            self.not_ready.discard(writer)
-            self.clients.pop(writer, None)
-            try:
-                writer.close()
-            except Exception:
-                pass
+            watchdog.cancel()
+            self._drop_client(writer)
             print(f"[-] {peer[0]}:{peer[1]} dropped during handshake")
             return
         self.not_ready.discard(writer)
@@ -373,7 +424,10 @@ class Hub:
         asyncio.create_task(self._nudge_keyframe(writer, q))
         try:
             while True:
-                writer.write(await q.get())
+                packet = await q.get()
+                if packet is None:              # input EOF / watchdog / cap
+                    break
+                writer.write(packet)
                 # a client that stops reading (phone asleep, USB gone) must not
                 # keep the display alive forever: drop it after 10 s
                 await asyncio.wait_for(writer.drain(), timeout=10)
@@ -383,13 +437,21 @@ class Hub:
             pass
         finally:
             input_task.cancel()
-            self.not_ready.discard(writer)
-            self.clients.pop(writer, None)
+            watchdog.cancel()
+            self._drop_client(writer)
             print(f"[-] {peer[0]}:{peer[1]} disconnected", flush=True)
-            try:
-                writer.close()
-            except Exception:
-                pass
+
+    async def _client_watchdog(self, writer: asyncio.StreamWriter, state: dict) -> None:
+        """Drop a client that stopped sending heartbeats/input (e.g. USB yanked)."""
+        while writer in self.clients:
+            await asyncio.sleep(1.0)
+            if writer not in self.clients:
+                return
+            if time.monotonic() - state["last_seen"] > self.CLIENT_SILENCE:
+                print(f"[-] client silent for {self.CLIENT_SILENCE:.0f} s — dropping it",
+                      flush=True)
+                self._drop_client(writer)
+                return
 
     async def _nudge_keyframe(self, writer: asyncio.StreamWriter,
                               q: asyncio.Queue) -> None:
@@ -405,9 +467,10 @@ class Hub:
         with contextlib.suppress(asyncio.QueueFull):
             q.put_nowait(gop[0])
 
-    async def _client_inputs(self, reader: asyncio.StreamReader, peer) -> None:
-        """Read packets the phone sends back (input events, flags 0x04)."""
-        state = {"held": -1, "x": 0, "y": 0}
+    async def _client_inputs(self, reader: asyncio.StreamReader,
+                             writer: asyncio.StreamWriter, peer,
+                             state: dict) -> None:
+        """Read packets the phone sends back (input + control/heartbeat)."""
         try:
             while True:
                 hdr = await reader.readexactly(FRAME_HDR.size)
@@ -415,16 +478,20 @@ class Hub:
                 if length <= 0 or length > 4096:
                     raise ConnectionError("bogus inbound packet")
                 payload = await reader.readexactly(length)
+                state["last_seen"] = time.monotonic()
                 if flags & 0x04:
-                    self._forward_input(payload, peer, state)
+                    await self._forward_input(payload, peer, state)
                 elif flags & 0x08:
                     self._handle_control(payload, peer)
         except (asyncio.IncompleteReadError, ConnectionError, asyncio.CancelledError):
             pass
         finally:
-            self._release_held_button(state, peer)
+            try:
+                await self._release_held_button(state, peer)
+            finally:
+                self._drop_client(writer)
 
-    def _forward_input(self, payload: bytes, peer, state: dict) -> None:
+    async def _forward_input(self, payload: bytes, peer, state: dict) -> None:
         """Input packet: u8 kind | u8 buttons | int32be x | int32be y."""
         if len(payload) < 10:
             return
@@ -447,10 +514,14 @@ class Hub:
             return
         try:
             helper_in.write(b"I %d %d %d %d\n" % (kind, buttons & 1, x, y))
-        except (ConnectionError, RuntimeError):
+            # A flooded/slow helper must not grow this buffer without bound.
+            await asyncio.wait_for(helper_in.drain(), timeout=1.0)
+        except (ConnectionError, RuntimeError, asyncio.TimeoutError):
             self.helper_in = None
+            with contextlib.suppress(Exception):
+                helper_in.close()             # EOF also releases the helper's button
 
-    def _release_held_button(self, state: dict, peer) -> None:
+    async def _release_held_button(self, state: dict, peer) -> None:
         """The app died / the link dropped mid-click: never leave the Mac's
         mouse button pressed."""
         held = state["held"]
@@ -464,12 +535,16 @@ class Hub:
             return
         try:
             helper_in.write(b"I 2 %d %d %d\n" % (held, state["x"], state["y"]))
-        except (ConnectionError, RuntimeError):
+            await asyncio.wait_for(helper_in.drain(), timeout=1.0)
+        except (ConnectionError, RuntimeError, asyncio.TimeoutError):
             self.helper_in = None
+            with contextlib.suppress(Exception):
+                helper_in.close()
 
     def _handle_control(self, payload: bytes, peer) -> None:
         """Control packet: u8 cmd | u8 arg.
-        cmd 1 = capture frame-rate cap (the phone's 60/90 fps selector)."""
+        cmd 1 = capture frame-rate cap; cmd 2 = heartbeat (last_seen is
+        refreshed by the reader before this runs)."""
         if len(payload) < 2:
             return
         cmd, arg = payload[0], payload[1]
@@ -483,6 +558,19 @@ class Hub:
               f"(requested by {peer[0]}:{peer[1]})", flush=True)
         self.apply_capture_fps()
 
+    def request_keyframe(self) -> None:
+        """Ask the helper for one keyframe, coalescing bursts of slow clients."""
+        if self.keyframe_requested:
+            return
+        self.keyframe_requested = True
+        helper_in = self.helper_in
+        if helper_in is None:
+            return
+        try:
+            helper_in.write(b"K\n")
+        except (ConnectionError, RuntimeError):
+            self.helper_in = None
+
     def apply_capture_fps(self) -> None:
         """Push the chosen cap to the helper (re-applied after restarts)."""
         helper_in = self.helper_in
@@ -493,16 +581,27 @@ class Hub:
         except (ConnectionError, RuntimeError):
             self.helper_in = None
 
-    async def broadcast(self, frame: bytes) -> None:
+    async def broadcast(self, frame: bytes, keyframe: bool | None = None) -> None:
+        if keyframe is True:
+            self.keyframe_requested = False
         for writer, q in list(self.clients.items()):
             if writer in self.not_ready:       # handshake: the GOP covers it
                 continue
-            if q.full():                       # slow client: drop oldest
+            if q.full():                       # slow client: drop the stale chain
                 self.drops += 1
-                try:
-                    q.get_nowait()
-                except asyncio.QueueEmpty:
+                while not q.empty():
+                    with contextlib.suppress(asyncio.QueueEmpty):
+                        q.get_nowait()
+                self.need_keyframe.add(writer)
+                if keyframe is not True:
+                    self.request_keyframe()
+            if writer in self.need_keyframe:
+                if keyframe is None:           # cursor packet: always useful
                     pass
+                elif not keyframe:             # wait for a clean starting point
+                    continue
+                else:
+                    self.need_keyframe.discard(writer)
             try:
                 q.put_nowait(frame)
             except asyncio.QueueFull:
@@ -510,10 +609,16 @@ class Hub:
 
 
 async def run_stream(args) -> int:
-    hub = Hub()
+    token = load_token(getattr(args, "token", None))
+    hub = Hub(token)
     server = await asyncio.start_server(hub.handle_client, args.bind, args.port)
     ip = lan_ip()
-    print(f"listening on {args.bind}:{args.port}  →  phone connects to {ip or args.bind}:{args.port}")
+    print(f"listening on {args.bind}:{args.port}")
+    print(f"USB: 127.0.0.1:{args.port}#{token}")
+    if args.bind in ("0.0.0.0", "::"):
+        print(f"LAN: {ip or args.bind}:{args.port}#{token}")
+    else:
+        print("Wi-Fi: start with --bind 0.0.0.0 to listen on the LAN")
     try:
         return await _stream_sessions(args, hub)
     finally:
@@ -600,7 +705,7 @@ async def _stream_sessions(args, hub) -> int:
         mode_task = None
         try:
             # helper prints one ASCII header line before the binary stream
-            line = await asyncio.wait_for(proc.stdout.readline(), timeout=45)
+            line = await asyncio.wait_for(proc.stdout.readline(), timeout=15)
             if not line.startswith(b"PDH1 "):
                 print("helper did not start streaming — its stderr above explains why")
                 await asyncio.sleep(3)
@@ -619,17 +724,26 @@ async def _stream_sessions(args, hub) -> int:
             mode_task = asyncio.create_task(
                 _watch_display_mode(proc, display_id, int(w), int(h)))
 
+            first_frame = True
             while True:
-                hdr = await proc.stdout.readexactly(FRAME_HDR.size)
+                # Software cursor packets arrive at least once per second even
+                # on a static screen, so 5 s means the helper is wedged. The
+                # first frame gets 15 s for ScreenCaptureKit startup.
+                timeout = 15 if first_frame else 5
+                hdr = await asyncio.wait_for(
+                    proc.stdout.readexactly(FRAME_HDR.size), timeout=timeout)
                 length, flags = FRAME_HDR.unpack(hdr)
-                payload = await proc.stdout.readexactly(length)
+                payload = await asyncio.wait_for(
+                    proc.stdout.readexactly(length), timeout=5)
+                first_frame = False
                 packet = hdr + payload
                 if flags & 0x02:
                     # cursor position packet: forward, never count as video
                     hub.last_cursor = packet
                     await hub.broadcast(packet)
                     continue
-                if flags & 0x01:
+                keyframe = bool(flags & 0x01)
+                if keyframe:
                     hub.remember_frame(packet, keyframe=True)
                     if not hub.header_ready.is_set():
                         # Open the door only once a keyframe exists: a client
@@ -639,7 +753,7 @@ async def _stream_sessions(args, hub) -> int:
                         hub.header_ready.set()
                 else:
                     hub.remember_frame(packet, keyframe=False)
-                await hub.broadcast(packet)
+                await hub.broadcast(packet, keyframe=keyframe)
 
                 frames += 1
                 win_frames += 1
@@ -658,7 +772,7 @@ async def _stream_sessions(args, hub) -> int:
         except asyncio.IncompleteReadError:
             pass
         except asyncio.TimeoutError:
-            print("timed out waiting for the helper to start")
+            print("helper produced no output — killing and restarting it")
         finally:
             watchdog.cancel()
             with contextlib.suppress(Exception, asyncio.CancelledError):
@@ -745,9 +859,10 @@ def main() -> int:
     s.add_argument("--fps", type=int, default=60)
     s.add_argument("--bitrate", type=float, default=10.0, help="Mbps")
     s.add_argument("--bind", default="127.0.0.1",
-                   help="listen address (default 127.0.0.1; 0.0.0.0 exposes "
-                        "unauthenticated input injection to the LAN)")
+                   help="listen address (default 127.0.0.1; use 0.0.0.0 for Wi-Fi)")
     s.add_argument("--port", type=int, default=8420)
+    s.add_argument("--token", default=None,
+                   help="shared secret (default: ~/.phonedisplay-token, generated once)")
     s.add_argument("--synthetic", action="store_true",
                    help="stream a test pattern instead of the screen (no display, no permissions)")
     s.add_argument("--no-caffeinate", action="store_true",
