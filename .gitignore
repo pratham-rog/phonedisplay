@@ -12,6 +12,11 @@ __pycache__/
 host-macos/vdhelper
 host-macos/vdhelper.app/
 
+# macOS app build artifacts
+mac/PhoneDisplay/.build/
+mac/PhoneDisplay/.swiftpm/
+mac/PhoneDisplay/PhoneDisplay.app/
+
 # Tool build artifacts
 tools/vdfpswin
 
