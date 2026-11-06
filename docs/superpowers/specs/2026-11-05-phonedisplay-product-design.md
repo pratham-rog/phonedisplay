@@ -49,12 +49,14 @@ and the existing idle behavior. On a typical 1080p Android phone: 1920×1080 at
 - A native macOS menu-bar app with a real window, onboarding, permission
   checklist, pairing QR, connected-device status, settings, and logs.
 - Keep the proven ObjC `vdhelper` as the virtual-display/capture/encode engine;
-  port `pdctl.py` orchestration to Swift.
+  port `pdctl.py` orchestration to Swift. Keep the Python CLI and test client as
+  a developer harness and regression tool; they are not part of the product.
 - A native Android app with discovery, QR pairing, saved Macs, reconnect,
   capability negotiation, fullscreen H.264 decode, and the existing S-Pen path.
 - TLS with a pinned self-signed Mac identity. No plaintext token on the wire.
-- Dynamic mode selection: match the phone's landscape resolution where macOS
-  accepts it; otherwise fall back to 1920×1080. Cap at 3120×1440 and 90 fps.
+- Safe mode first: 1920×1080 at 60 fps is the universal default. A tested
+  high-res profile (3120×1440 at 90 fps) is enabled for the S24 Ultra. Native
+  resolution negotiation for every phone is a later milestone.
 - Permission onboarding that opens the exact macOS Settings panes and reports
   live status.
 - A repeatable free release pipeline: DMG, APK, SHA-256 sums, install guide,
@@ -86,7 +88,8 @@ and the existing idle behavior. On a typical 1080p Android phone: 1920×1080 at
 - Target macOS 14 Sonoma or newer. Apple Silicon is the primary target; Intel is
   best-effort until tested on real Intel hardware. The app checks for
   `CGVirtualDisplay` at runtime and shows an unsupported message if absent.
-- Android `minSdk 24` (Android 7). H.264 hardware decode is required. Devices
+- Android `minSdk 24` (Android 7) for the build, but the supported/tested
+  baseline is Android 8+ with hardware H.264 decode. Android 7 is beta. Devices
   without a usable H.264 decoder show an unsupported message.
 - H.264 only, SDR only, 90 fps maximum. The existing encoder is the ceiling.
 - GitHub Releases only. The repository must be public for free GitHub Actions
@@ -149,8 +152,10 @@ not part of first-run onboarding.
 2. Allow install from this source when Android asks.
 3. Open the app. Grant camera permission only when scanning the QR code.
 4. The app lists discovered Macs on the same network. If discovery is blocked,
-   the user taps **Scan QR** or opens **Having trouble? → Enter details**.
-5. Scan the Mac’s QR. The app stores the Mac identity and pairing secret.
+   the user taps **Scan QR**.
+5. Scan the Mac’s QR. The app stores the Mac identity and pairing secret. If the
+   camera is unavailable, v1 offers the advanced USB path; manual entry is a
+   later milestone.
 6. Connect. The phone goes fullscreen landscape and shows the Mac display.
 7. Returning to the app auto-reconnects to the last Mac. **Choose another Mac**
    returns to the device list.
@@ -158,8 +163,8 @@ not part of first-run onboarding.
 ### Pairing
 
 Pairing is a one-time exchange that creates a per-device long-lived secret. The
-QR token and the 8-character code are bootstrap secrets, not the long-lived
-device secret.
+QR token is a bootstrap secret, not the long-lived device secret. V1 is QR-only;
+manual code entry is deferred until users ask for it.
 
 1. The Mac app generates a P-256 self-signed TLS identity on first run and stores
    the private key in a 0600 file under Application Support. It generates a
@@ -167,10 +172,9 @@ device secret.
 2. **Pair a phone** opens a two-minute pairing window. The window shows a QR
    payload:
    `phonedisplay://pair?v=1&host=<lan-ip>&port=<port>&fp=<sha256>&token=<pairing-token>&id=<host-uuid>&name=<mac-name>`.
-   It also shows an 8-character code for manual entry.
 3. The Android app verifies the payload, connects with TLS, pins the certificate
-   fingerprint, and sends a `pair` message with the QR token or the 8-character
-   code plus its device name/model.
+   fingerprint, and sends a `pair` message with the QR token plus its device
+   name/model.
 4. The host validates the bootstrap secret while the window is open, creates a
    32-byte per-device secret, stores `host UUID + device ID + secret + name`, and
    replies with `paired` containing the device ID and secret. The pairing window
@@ -181,15 +185,14 @@ device secret.
 6. Reconnect uses only `hello`; the pairing window is not needed. The phone
    matches a discovered Mac by host UUID and updates the saved address if DHCP
    changed it. If discovery is blocked, it tries the saved address and shows a
-   manual retry.
+   retry.
 7. A changed certificate fingerprint is a hard error: “This Mac’s identity
    changed. Pair again.” A revoked or unknown device gets “Pair this phone
    again.”
-8. Manual fallback shows the certificate fingerprint on both screens for visual
-   comparison before the phone sends the 8-character code. No silent
-   trust-on-first-use. Failed manual attempts are limited to five per minute.
-9. If the QR/code expires before the phone connects, the phone says “Pairing
-   expired — show a new QR on the Mac.” The Mac can reopen the window.
+8. If the QR expires before the phone connects, the phone says “Pairing expired —
+   show a new QR on the Mac.” The Mac can reopen the window.
+9. If the phone camera is unavailable, v1 offers the advanced USB path or a
+   different phone; manual entry is a later milestone.
 10. The Mac app can forget a device; the phone must pair again. The host keeps at
     most 32 known devices.
 
@@ -205,10 +208,10 @@ device secret.
   route. If more than one interface is active, it shows a small “Network: …”
   picker with all non-loopback IPv4 addresses. The phone-hotspot case is just a
   Wi-Fi interface; QR is the reliable path when mDNS is blocked.
-- Manual fallback uses the same host UUID and fingerprint check; it does not
-  create a second identity.
+- V1 has no manual host entry; QR carries the host UUID, fingerprint, and
+  address. Manual entry is a later milestone.
 - A phone on a different network cannot connect; the app says “Same Wi-Fi
-  network required” and offers QR/manual retry. No relay.
+  network required” and offers a retry. No relay.
 
 ### Streaming and errors
 
@@ -275,7 +278,7 @@ Modules:
 - `MainActivity` — Compose navigation: welcome, devices, scan, connecting,
   streaming, error, settings.
 - `DiscoveryClient` — `NsdManager` for `_phonedisplay._tcp`; explicit
-  refresh; fallback to QR/manual.
+  refresh; fallback to QR.
 - `PairingStore` — Keystore AES/GCM-encrypted JSON in app storage; no plaintext
   secrets in SharedPreferences.
 - `TlsClient` — `SSLSocket` with a pinning `TrustManager`; hostname verification
@@ -291,8 +294,8 @@ Modules:
   permission requested only when opened.
 - `Settings` — 60/90 fps choice, show stats, forget Mac, version.
 
-The phone app does not request location. If a device’s NSD is unreliable, QR and
-manual entry are the supported fallbacks.
+The phone app does not request location. If a device’s NSD is unreliable, QR is
+the supported fallback; manual entry is deferred.
 
 ### Protocol
 
@@ -331,11 +334,13 @@ into authenticated client messages. The helper’s stdin commands `F <fps>` and
 
 The phone reports its landscape width/height and refresh rate.
 
-- Preferred mode: the phone’s landscape resolution, if width ≤ 3120, height ≤
-  1440, and the helper can create it.
-- Fallback: 1920×1080, then 1280×720.
-- FPS: `min(phone refresh, 90, host setting)`. Default 60 when the phone does not
-  report a reliable value. The reference S24 uses 90.
+- Universal default: 1920×1080 at 60 fps. This is the safe mode for every phone.
+- High-res profile: 3120×1440 at 90 fps, enabled only for the tested S24 Ultra
+  (or a device that passes the same capability check). It is a profile, not a
+  general negotiation.
+- Fallback if the high-res profile fails: 1920×1080 at 60 fps. Then 1280×720 at
+  60 fps.
+- Native resolution negotiation for arbitrary phones is a later milestone.
 - Bitrate: approximately 0.09 bits per pixel per frame, clamped to 6–35 Mbps.
   Examples: 3120×1440@90 → 35 Mbps; 1920×1080@60 → 11 Mbps.
 - Display name: `PhoneDisplay`; stable serial derived from name + pixel size so
@@ -349,9 +354,8 @@ The phone reports its landscape width/height and refresh rate.
 
 - TLS with a self-signed P-256 certificate; the certificate fingerprint is in
   the QR and pinned by the phone.
-- Pairing bootstrap: a 32-byte QR token or an 8-character manual code, valid only
-  while the two-minute window is open and for one success. It is never the
-  long-lived secret.
+- Pairing bootstrap: a 32-byte QR token, valid only while the two-minute window
+  is open and for one success. It is never the long-lived secret.
 - Per-device secret: 32 random bytes, base64url, issued once by the host after a
   successful pairing. The phone stores it in Keystore-encrypted storage. The Mac
   stores the device ID, name, and secret in a 0600 file under Application
@@ -408,9 +412,9 @@ The phone reports its landscape width/height and refresh rate.
 - Security: wrong secret, wrong fingerprint, replayed pairing token, expired
   token, malformed frame lengths, oversized frames, slow client, pairing window
   expiry, rate limit, revoked device.
-- Android: unit tests for protocol/pairing store; emulator UI tests for API 24,
-  28, 34, 35; real S24 for 3120×1440@90, S-Pen, reconnect, idle; at least one
-  other physical Android phone for 1080p/60 if available.
+- Android: unit tests for protocol/pairing store; emulator UI tests for API 28,
+  34, 35; API 24 is a beta check; real S24 for 3120×1440@90, S-Pen, reconnect,
+  idle; at least one other physical Android phone for 1080p/60 if available.
 - Install: clean macOS user account or VM for Gatekeeper and TCC; APK sideload
   on a clean phone profile.
 - Performance: 1080p60 and 3120×1440@90; frame drops, CPU, memory, reconnect
@@ -420,16 +424,22 @@ The phone reports its landscape width/height and refresh rate.
 
 ## Milestones
 
+0. **Risk spike (throwaway).** Build a minimal SwiftUI/SPM `.app` on this Mac
+   (Command Line Tools only), bundle `vdhelper`, grant Screen Recording and
+   Accessibility to the app, confirm the helper inherits them, and run
+   1080p60 plus a TLS listener. If this fails, adjust the architecture before
+   writing the product.
 1. **Vertical slice.** Mac app shell, permissions checklist, helper integration,
    TLS server, QR pairing; Android shell, QR scan, TLS, 1920×1080@60 video on
    the S24. One phone, no discovery yet.
-2. **Product quality.** Discovery, saved Macs, reconnect, 3120×1440@90,
-   dynamic mode/fallback, cursor, S-Pen, error states, idle teardown, settings.
+2. **Product quality.** Discovery, saved Macs, reconnect, high-res S24 profile
+   (3120×1440@90), safe-mode fallback, cursor, S-Pen, error states, idle
+   teardown, settings.
 3. **Free release.** DMG, APK signing, GitHub Actions, checksums, install guide,
    README, release notes, clean-account install test.
-4. **Compatibility and hardening.** Android 7–16 test pass, at least one
-   non-Samsung phone, Intel Mac if available, security audit, performance,
-   accessibility pass, final bug fixes.
+4. **Compatibility and hardening.** Android 8–16 test pass (Android 7 beta), at
+   least one non-Samsung phone, Intel Mac if available, security audit,
+   performance, accessibility pass, final bug fixes.
 
 ## Open decisions for the builder
 
@@ -455,7 +465,8 @@ The phone reports its landscape width/height and refresh rate.
 - Porting `pdctl.py` to Swift can regress the verified video path; the helper
   stays, and integration tests must cover the old behaviors.
 - TLS/pairing is security-sensitive; a mistake could expose input injection.
-- Phone-hotspot Wi-Fi may block mDNS; QR/manual entry must work.
+- Phone-hotspot Wi-Fi may block mDNS; QR must work. QR-only v1 means a phone
+  with no working camera needs the advanced USB path or manual entry later.
 - High-resolution/high-fps H.264 remains hardware-limited; fallback must be
   automatic.
 - GitHub-only distribution means users may run mismatched host/phone versions;
