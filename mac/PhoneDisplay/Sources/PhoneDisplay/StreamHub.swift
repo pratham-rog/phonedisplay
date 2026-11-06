@@ -20,6 +20,7 @@ final class StreamHub {
     private var cacheBytes = 0
     private var lastCursor: Data?
     private var idleWork: DispatchWorkItem?
+    private var headerTimeoutWork: DispatchWorkItem?
     private var totalFrames = 0
     private var fpsFrames = 0
     private var fpsStart = Date()
@@ -69,6 +70,7 @@ final class StreamHub {
             return
         }
         clients[ObjectIdentifier(client)] = client
+        Diagnostics.log("client added (\(clients.count) total)")
         onClientCount?(clients.count)
         idleWork?.cancel()
         idleWork = nil
@@ -133,6 +135,15 @@ final class StreamHub {
             fpsStart = Date()
             onStats?(0, 0)
             onState?("Starting virtual display")
+            let timeout = DispatchWorkItem { [weak self] in
+                guard let self, self.headerLine == nil, self.helper != nil else { return }
+                Diagnostics.log("helper header timeout")
+                self.onState?("Virtual display did not start")
+                self.stopHelper()
+                self.closeAllClients()
+            }
+            headerTimeoutWork = timeout
+            stateQueue.asyncAfter(deadline: .now() + 15, execute: timeout)
         } catch {
             onState?("Could not start virtual display: \(error.localizedDescription)")
             closeAllClients()
@@ -141,8 +152,11 @@ final class StreamHub {
 
     private func didReceiveHeader(_ header: HelperHeader) {
         guard !stopped else { return }
+        headerTimeoutWork?.cancel()
+        headerTimeoutWork = nil
         headerLine = "PD01 \(header.width) \(header.height) \(header.fps) \(header.codec)\n"
             .data(using: .ascii)
+        Diagnostics.log("hub header ready; clients=\(clients.count)")
         onState?("Streaming \(header.width)x\(header.height) @ \(header.fps) fps")
         for client in clients.values {
             _ = sendHeaderAndCache(to: client)
@@ -195,6 +209,7 @@ final class StreamHub {
         guard let headerLine else { return false }
         let id = ObjectIdentifier(client)
         guard !ready.contains(id) else { return true }
+        Diagnostics.log("sending header + \(cache.count) cached packets")
         client.send(headerLine)
         for packet in cache {
             client.send(packet)
@@ -248,6 +263,8 @@ final class StreamHub {
     }
 
     private func stopHelper() {
+        headerTimeoutWork?.cancel()
+        headerTimeoutWork = nil
         helper?.onExit = nil
         helper?.stop()
         helper = nil

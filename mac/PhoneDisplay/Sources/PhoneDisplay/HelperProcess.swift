@@ -44,6 +44,7 @@ final class HelperProcess {
     ) throws {
         process.executableURL = helperURL
         var arguments = [
+            "--stream",
             "--width", String(width),
             "--height", String(height),
             "--refresh", String(fps),
@@ -54,6 +55,7 @@ final class HelperProcess {
         if synthetic {
             arguments.append("--synthetic")
         }
+        Diagnostics.log("helper args \(arguments.joined(separator: " "))")
         process.arguments = arguments
         process.standardInput = stdinPipe
         process.standardOutput = stdoutPipe
@@ -72,6 +74,7 @@ final class HelperProcess {
             guard !data.isEmpty else { return }
             let text = String(decoding: data, as: UTF8.self)
             for line in text.split(whereSeparator: \.isNewline) where !line.isEmpty {
+                Diagnostics.log("helper: \(line)")
                 self?.onLog?(String(line))
             }
         }
@@ -82,6 +85,7 @@ final class HelperProcess {
         }
 
         try process.run()
+        Diagnostics.log("helper started pid=\(process.processIdentifier) synthetic=\(synthetic)")
     }
 
     func sendInput(kind: Int, buttons: Int, x: Int32, y: Int32) {
@@ -115,10 +119,12 @@ final class HelperProcess {
         for event in parser.append(data) {
             switch event {
             case .header(let header):
+                Diagnostics.log("helper header \(header.width)x\(header.height)@\(header.fps) id=\(header.displayID ?? 0)")
                 onHeader?(header)
             case .packet(let frame):
                 onPacket?(frame)
             case .error(let message):
+                Diagnostics.log("helper parse error: \(message)")
                 onLog?(message)
             }
         }

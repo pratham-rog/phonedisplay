@@ -170,11 +170,13 @@ final class SocketServer {
               parts[0] == "PD01",
               constantTimeEquals(parts[1], token)
         else {
+            Diagnostics.log("client rejected: bad token")
             onLog?("Client rejected: bad token.")
             return
         }
 
         setReceiveTimeout(client.fd, seconds: 0)
+        Diagnostics.log("client authenticated")
         onClientAuthenticated?(client)
 
         while true {
