@@ -12,7 +12,7 @@ android {
         minSdk 24
         targetSdk 34
         versionCode 1
-        versionName "0.1"
+        versionName "0.1.0"
     }
 
     buildTypes {
@@ -29,4 +29,9 @@ android {
     kotlinOptions {
         jvmTarget = '17'
     }
+}
+
+dependencies {
+    implementation 'com.journeyapps:zxing-android-embedded:4.3.0'
+    testImplementation 'junit:junit:4.13.2'
 }

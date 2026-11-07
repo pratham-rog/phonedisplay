@@ -76,4 +76,31 @@ check(
     "QR payload"
 )
 
+// Pairing payload round-trip.
+let pairing = PairingPayload(
+    host: "10.0.0.2",
+    port: 8420,
+    fingerprint: "abc123",
+    token: "pair_token",
+    hostID: "host-uuid",
+    name: "Pixiii's Mac"
+)
+let parsed = PairingPayload(url: pairing.url)
+check(parsed == pairing, "pairing payload round-trip")
+check(pairing.url.hasPrefix("phonedisplay://pair?v=1&"), "pairing URL scheme")
+check(PairingPayload(url: "phonedisplay://pair?v=2") == nil, "rejects wrong pairing version")
+check(PairingPayload(url: "https://example.com") == nil, "rejects wrong pairing scheme")
+
+// Base64url is the on-wire secret format.
+let bytes = Data([0x00, 0xFF, 0x10, 0x20, 0x30])
+let encoded = Base64URL.encode(bytes)
+check(Base64URL.decode(encoded) == bytes, "base64url round-trip")
+check(!encoded.contains("+") && !encoded.contains("/") && !encoded.contains("="), "base64url alphabet")
+
+check(
+    sha256Hex(Data()) ==
+        "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "SHA-256 empty vector"
+)
+
 print("\n\(checks) checks passed.")

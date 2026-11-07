@@ -20,6 +20,9 @@ mac/PhoneDisplay/PhoneDisplay.app/
 # Tool build artifacts
 tools/vdfpswin
 
+# Release artifacts
+dist/
+
 # Android / Gradle
 android/.gradle/
 android/build/

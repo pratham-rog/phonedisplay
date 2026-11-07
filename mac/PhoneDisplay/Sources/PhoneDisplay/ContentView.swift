@@ -4,7 +4,7 @@ import SwiftUI
 
 struct ContentView: View {
     @EnvironmentObject private var model: AppModel
-    private let timer = Timer.publish(every: 2, on: .main, in: .common).autoconnect()
+    private let timer = Timer.publish(every: 1, on: .main, in: .common).autoconnect()
 
     var body: some View {
         ScrollView {
@@ -24,8 +24,26 @@ struct ContentView: View {
                         .foregroundStyle(.secondary)
                 }
 
+                VStack(alignment: .leading, spacing: 6) {
+                    HStack(spacing: 12) {
+                        Text("Display profile")
+                            .font(.headline)
+                        Picker("Display profile", selection: $model.profile) {
+                            ForEach(DisplayProfile.allCases) { profile in
+                                Text(profile.title).tag(profile)
+                            }
+                        }
+                        .labelsHidden()
+                        .frame(maxWidth: 330)
+                        .disabled(model.isRunning)
+                    }
+                    Text(model.profile.detail + (model.isRunning ? " Applies when you restart." : ""))
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+
                 if model.isRunning {
-                    connection
+                    pairing
                 }
 
                 if !model.lastLog.isEmpty {
@@ -35,15 +53,21 @@ struct ContentView: View {
                         .lineLimit(2)
                 }
 
-                Text("Development build: plain TCP. TLS pairing is the next slice.")
+                Text("Secure TLS pairing. The QR expires after two minutes and pairs one phone.")
                     .font(.caption)
                     .foregroundStyle(.tertiary)
             }
             .padding(24)
         }
         .frame(width: 620, height: 780)
-        .onAppear { model.refreshPermissions() }
-        .onReceive(timer) { _ in model.refreshPermissions() }
+        .onAppear {
+            model.refreshPermissions()
+            model.refreshPairing()
+        }
+        .onReceive(timer) { _ in
+            model.refreshPermissions()
+            model.refreshPairing()
+        }
     }
 
     private var header: some View {
@@ -102,60 +126,77 @@ struct ContentView: View {
         }
     }
 
-    private var connection: some View {
+    private var pairing: some View {
         VStack(alignment: .leading, spacing: 12) {
             Divider()
-            Text("Connect your phone")
-                .font(.headline)
 
-            HStack(alignment: .top, spacing: 18) {
-                if let qr = model.qrImage {
+            if let device = model.pairedDeviceName {
+                HStack(spacing: 8) {
+                    Image(systemName: model.clientCount > 0 ? "checkmark.circle.fill" : "iphone")
+                        .foregroundStyle(model.clientCount > 0 ? .green : .secondary)
+                    Text(device)
+                        .font(.headline)
+                    Spacer()
+                    Text(model.clientCount > 0 ? "Connected" : "Waiting for phone")
+                        .foregroundStyle(.secondary)
+                }
+                if model.clientCount == 0 {
+                    Button("Show a new pairing QR") { model.beginPairing() }
+                        .controlSize(.small)
+                }
+            } else if let qr = model.qrImage, let payload = model.pairingPayload {
+                Text("Pair your phone")
+                    .font(.headline)
+                HStack(alignment: .top, spacing: 18) {
                     Image(nsImage: qr)
                         .interpolation(.none)
                         .resizable()
-                        .frame(width: 180, height: 180)
+                        .frame(width: 190, height: 190)
                         .padding(8)
                         .background(.white, in: RoundedRectangle(cornerRadius: 10))
-                }
 
-                VStack(alignment: .leading, spacing: 10) {
-                    if let info = model.connectionInfo {
-                        Text("Mac address")
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                        Text("\(info.host):\(info.port)")
-                            .font(.system(.body, design: .monospaced))
-                            .textSelection(.enabled)
-
-                        Text("Connection string for the current Android app")
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                        Text(info.connectionString)
+                    VStack(alignment: .leading, spacing: 10) {
+                        Text("Open PhoneDisplay on Android and scan this code.")
+                            .fixedSize(horizontal: false, vertical: true)
+                        Text("Mac: \(payload.host):\(payload.port)")
                             .font(.system(.caption, design: .monospaced))
                             .textSelection(.enabled)
-                            .lineLimit(2)
-
-                        Button("Copy connection string") {
-                            model.copyConnectionString()
+                        if let expiry = model.pairingExpiry {
+                            Text("Expires \(expiry, style: .relative)")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
                         }
-                        .controlSize(.small)
+                        Text("This QR carries a one-time bootstrap secret; the long-lived device secret is issued after pairing.")
+                            .font(.caption)
+                            .foregroundStyle(.tertiary)
+                            .fixedSize(horizontal: false, vertical: true)
                     }
-
-                    HStack(spacing: 14) {
-                        Label("\(model.clientCount) connected", systemImage: "iphone")
-                        Label("\(model.fps) fps", systemImage: "speedometer")
-                        Label("\(model.frames) frames", systemImage: "film")
-                    }
+                    Spacer()
+                }
+                Button("Show a new QR") { model.beginPairing() }
+                    .controlSize(.small)
+            } else {
+                Text("Pairing expired")
+                    .font(.headline)
+                Text("Show a new QR on the Mac to pair this phone.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
-                }
-                Spacer()
+                Button("Show a new QR") { model.beginPairing() }
+                    .controlSize(.small)
             }
 
-            Text("The QR is for the new Android app. For now, paste the connection string into the current app's address field.")
-                .font(.caption)
-                .foregroundStyle(.tertiary)
+            stats
         }
+    }
+
+    private var stats: some View {
+        HStack(spacing: 14) {
+            Label("\(model.clientCount) connected", systemImage: "iphone")
+            Label("\(model.fps) fps", systemImage: "speedometer")
+            Label("\(model.frames) frames", systemImage: "film")
+        }
+        .font(.caption)
+        .foregroundStyle(.secondary)
     }
 }
 

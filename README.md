@@ -1,377 +1,172 @@
 # PhoneDisplay
 
-Use your Android phone as a **true second monitor** for your Mac (Windows later).
+Use an Android phone as a real second display for a Mac. Free, local-only, no
+accounts, no cloud, no App Store or Play Store.
 
-```
-┌───────────────────────── Mac (host) ─────────────────────────┐
-│                                                              │
-│  vdhelper (Objective-C, compiled with clang)                 │
-│   ├─ 1. create virtual display   ← CGVirtualDisplay API      │
-│   ├─ 2. capture it               ← ScreenCaptureKit          │
-│   └─ 3. encode H.264 frames      ← VideoToolbox (hardware)   │
-│                    │ length-prefixed NAL units               │
-│                    ▼                                          │
-│  pdctl.py  ── TCP server on your LAN ──► ...                 │
-│                                                              │
-└──────────────────────────────────────────────────────────────┘
-                        │  Wi-Fi / USB tether
-                        ▼
-┌───────────────────────── Phone ──────────────────────────────┐
-│  Android app (Kotlin)                                        │
-│   ├─ connect to host, receive H.264                          │
-│   ├─ hardware-decode (MediaCodec)                            │
-│   └─ render fullscreen, keep screen awake                    │
-└──────────────────────────────────────────────────────────────┘
-```
+- **Mac:** native SwiftUI app around a small Objective-C/ScreenCaptureKit
+  helper (`vdhelper`). Creates a virtual display and hardware-encodes H.264.
+- **Android:** native Kotlin app. Scans the Mac's QR, pins the Mac's TLS
+  certificate, hardware-decodes H.264, and renders fullscreen.
+- **Transport:** TLS 1.2+ on the local network, with a one-time QR bootstrap
+  token and a separate per-phone device secret.
 
-## Why this design
+The previous plain-TCP prototype is no longer used by the app. The secure host
+and Android client are implemented; the next physical-device test is installing
+the APK and scanning the Mac QR.
 
-- The only hard part on the Mac is **creating a virtual display and encoding video** —
-  that lives in a small native helper (`vdhelper`, written for you).
-- Everything else is Python (`pdctl.py`) and Kotlin (Android) — easy to iterate on.
-- No kernel extensions, no drivers, no Xcode project needed.
+## Requirements
 
-## Roadmap
+- macOS 14 or newer. Apple Silicon is the primary target; Intel is best effort.
+- Android 8.0 (API 24) or newer.
+- Mac and phone on the same Wi-Fi network for the normal path.
+- USB is supported as an advanced fallback with `adb reverse`; see below.
 
-| # | Milestone | Status |
-|---|-----------|--------|
-| 1 | Virtual monitor appears on the Mac | ✅ verified (macOS 27, M4 — see notes below) |
-| 2 | Capture it + H.264 encode + TCP server | ✅ verified end-to-end (needs one-time Screen Recording grant) |
-| 3 | Android app: connect, decode, fullscreen render | ✅ verified — Galaxy S24 Ultra over USB, live Mac desktop at 60–110 fps (≈106 fps sustained at 3120×1440) |
-| 4 | Polish: USB mode, mDNS auto-discovery, reconnect, resolution/rotation control | 🚧 USB ✅ + auto-reconnect ✅ + S-Pen pen mode ✅; discovery & controls next |
-
-## Quickstart (milestones 1 & 2)
+## Build and run the Mac app
 
 ```sh
-cd host-macos
-./build.sh                     # compile vdhelper (clang only, ~1s)
-
-# create a virtual monitor and hold it for 15 seconds:
-./vdhelper --display-only --seconds 15
+cd mac/PhoneDisplay
+./build.sh
+open PhoneDisplay.app
 ```
 
-While it runs, open **System Settings → Displays**: a display named
-*PhoneDisplay* should appear. You can drag windows onto it. When the helper
-stops, the display disappears.
+The app is ad-hoc signed and not notarized. A downloaded build needs
+**System Settings → Privacy & Security → Open Anyway**. On first run grant:
 
-With the Python CLI:
+1. **Screen Recording** — required to capture the virtual display.
+2. **Accessibility** — required for clicks and S-Pen input; pointer movement
+   works without it.
+3. **Local Network** — only if macOS asks when the listener starts.
 
-```sh
-python3 pdctl.py display --seconds 15                 # 1920×1080
-python3 pdctl.py display --width 2400 --height 1080 --hidpi
-```
+Press **Start PhoneDisplay**, choose a display profile, then scan the QR with
+the Android app.
 
-### Streaming to the phone (milestone 2)
-
-```sh
-python3 pdctl.py stream            # virtual monitor + H.264 over TCP :8420
-# prints: USB: 127.0.0.1:8420#<token>  (token file: ~/.phonedisplay-token, 0600)
-
-# verify from the Mac itself (exactly what the phone app speaks):
-python3 ../tools/testclient.py 127.0.0.1   # reads the same token file
-
-# or pipe one stream to a file and play it:
-./vdhelper --stream --seconds 10 > out.bin    # (parsed by pdctl; raw test below)
-```
-
-**The virtual display only exists while a phone is connected.** pdctl starts
-with no display at all; a phone connecting to :8420 spawns the helper (display
-appears within ~1 s), and when the last phone disconnects the display is torn
-down again after `--idle-grace` seconds (default 30; short drops and app
-restarts therefore do not move your windows around). Pass `--idle-grace 0` if
-you want it gone the moment the phone leaves.
-
-On the first run macOS will ask for **Screen Recording** permission (or you can
-pre-grant it: System Settings → Privacy & Security → Screen Recording → enable
-your terminal app, then restart the terminal). No permission yet? Use the test
-pattern — same network/encode path, no capture:
-
-```sh
-python3 pdctl.py stream --synthetic
-```
-
-## Android app (milestone 3)
-
-Location: `android/` — Kotlin, zero third-party dependencies, hardware decoding
-via `MediaCodec`, fullscreen `SurfaceView`, auto-reconnect, screen kept awake.
-
-In-app **60/90 fps selector**: hidden by default while streaming — tap the
-top-left corner (invisible hotspot), or tap it with the pen, to reveal the pill;
-it fades out again by itself after 4 s (about 1.5 s after you make a choice).
-On the connect screen it stays visible. The choice is saved, applied live to the running
-stream, and re-sent automatically on every (re)connect — the host caps its
-capture rate accordingly (≈66 and ≈91 fps as measured, since the panel
-quantizes to display ticks). The host's `--fps`/`--refresh` remain the ceiling
-the selector can cap below.
+## Build and install the Android app
 
 ```sh
 cd android
-./gradlew assembleDebug        # → app/build/outputs/apk/debug/app-debug.apk
-# the wrapper uses Homebrew's openjdk@17 when JAVA_HOME is unset
-
-# install once the phone is connected (see one-time setup below):
-~/Library/Android/sdk/platform-tools/adb install -r app/build/outputs/apk/debug/app-debug.apk
+./gradlew :app:assembleDebug
+# APK: app/build/outputs/apk/debug/app-debug.apk
 ```
 
-### USB mode (recommended — lowest latency, no Wi-Fi needed)
+Install it on the phone (enable "install unknown apps" for the file manager or
+browser you use). The debug APK is signed with the local Android debug key; it
+is not a Play Store build.
 
-On the Mac:
+When the phone is reachable over USB:
 
 ```sh
-cd host-macos
-python3 pdctl.py usb           # sets up: adb reverse tcp:8420 tcp:8420
-python3 pdctl.py usb --watch   # optional: keeps the tunnel armed across replugs
-python3 pdctl.py stream        # add --synthetic for a test pattern
+adb install -r android/app/build/outputs/apk/debug/app-debug.apk
 ```
 
-Paste the printed string — **`127.0.0.1:8420#<token>`** — into the app once and
-tap Connect. The bare `127.0.0.1:8420` is rejected. The app remembers the
-string; `adb reverse` tunnels that port over USB to the Mac. `--token` overrides
-the token file.
+## Pairing
 
-### Wi-Fi mode
+1. Mac: press **Start PhoneDisplay**. A QR appears.
+2. Android: press **Scan pairing QR** and scan it.
+3. The phone connects, pins the certificate, and receives a device secret.
+4. Later launches reconnect with that secret; no QR is needed.
 
-Start with `--bind 0.0.0.0`; the stream prints the Mac's address with the token
-(e.g. `172.29.204.21:8420#<token>`). Paste that whole string into the app. Same
-network required; USB is faster and more stable. The token is required on Wi-Fi
-too, but anyone who can reach the port can still try to guess it — use USB if
-you don't trust the network.
+The QR contains a one-time token that expires after two minutes and can pair one
+phone. The long-lived secret is issued only after a successful TLS connection
+and is stored in the Android Keystore (AES-GCM) and in a 0600 file on the Mac.
+The app enforces one active phone: a second phone gets a clear "already in use"
+error, while the same phone can replace its own old session.
 
-### One-time phone setup
+The QR payload is:
 
-1. Settings → About phone → tap **Build number** 7× (enables Developer options)
-2. Settings → Developer options → enable **USB debugging**
-3. Plug in the cable; tap **Allow** on the phone's prompt
-4. If the Mac still sees no device: swap the USB mode to *File transfer*, or
-   try another cable (some cables are charge-only)
+```
+phonedisplay://pair?v=1&host=<lan-ip>&port=<port>&fp=<sha256>&token=<one-time>&id=<mac-uuid>&name=<mac-name>
+```
 
-### S-Pen mode (drive the Mac with the stylus)
+## USB fallback
 
-Take the S-Pen out of its silo and it becomes the Mac's mouse:
-
-| Pen gesture | Mac effect |
-|---|---|
-| hover the tip over the glass | pointer moves (no contact needed) |
-| tap the tip | left click |
-| hold the side button + tap | right click |
-| tip down + drag | drag (button stays down until you lift) |
-| your palm / fingers | ignored while the pen is out |
-
-Put the pen back in the silo and finger control returns immediately. While
-pen mode is on, a small white dot shows at the top-right edge.
-
-How it works: pen events travel to the host as tiny input packets (10 bytes
-each) over the same TCP link; the helper injects real macOS mouse events at
-the virtual display's position. Hover-to-move needs no contact, so the pen
-can rest on the glass without clicking anything.
-
-Notes:
-
-- **Clicks need a one-time grant for the app you launch the stream from.**
-  macOS attributes input injection to the terminal app hosting the process
-  tree (the "responsible process"), *not* to `vdhelper`. Enable once:
-  System Settings → Privacy & Security → **Device Control and Data Access**
-  (macOS 26+ name for the Accessibility permission) → turn on your terminal
-  app (e.g. **Terminal**, iTerm, Ghostty…). Rebuilding `vdhelper` does not
-  invalidate this, because the grant belongs to the terminal app. Pointer
-  movement works without the grant; clicks are silently dropped until it is on.
-- Detach detection uses Samsung's `com.samsung.pen.INSERT` broadcast; the first
-  stylus event also switches pen mode on. In every case pen mode turns itself
-  off after 20 s without stylus activity, so a missed "pen inserted" broadcast
-  can never lock fingers out. Leaving the hover range, or losing the link,
-  while a button is held releases it explicitly.
-- The fps HUD stays reachable with the pen: a *tip* gesture that starts in the
-  top-left hotspot (or on the open pill) goes to the UI instead of the Mac;
-  hover still moves the Mac pointer, so the corner is not a dead zone.
-- If the pen's side button pops up Samsung's **Air command** menu, turn it
-  off: Settings → Advanced features → S Pen → Air command.
-- Mouse-level equivalence only — pressure and tilt are not forwarded.
-
-### High frame rates (90–110 fps)
+Wi-Fi is the normal path. For USB, forward the Mac's listener port to the phone:
 
 ```sh
-python3 pdctl.py stream --width 3120 --height 1440 \
-    --refresh 110 --fps 110 --bitrate 35
+adb reverse tcp:8420 tcp:8420
 ```
 
-Both the virtual display refresh *and* the stream fps must be set. Measured
-end-to-end (capture → encode → USB → phone decode), zero-ish drops
-(<0.2%):
+Scan the Mac QR as usual. The Android client tries the QR's LAN address first,
+then `127.0.0.1:<port>`; both paths use the same pinned certificate. If the Mac
+fell back to another port (8421–8439), forward that port instead.
 
-| Mode | Sustained | Notes |
-|------|-----------|-------|
-| 90 Hz / 90 fps | 90.0 fps | comfortable |
-| 100 Hz / 100 fps | 99.5 fps | comfortable |
-| 110 Hz / 110 fps | ≈106 fps | **max stable** (the display's own composite rate lands ~106) |
-| 120 Hz / 120 fps | — | **impossible on this hardware**: H.264 encoder output collapses to 0 at 540 Mpx/s; the media engine ceiling sits between 110 and 120 at 3120×1440 |
+## Display profiles
 
-> **Turn Low Power Mode off** (System Settings → Battery) while streaming:
-> LPM throttles WindowServer animations, so windows opened on the virtual
-> display visibly stutter (~15 fps) even though the stream still reports
-> 60–90 fps. The stream stats stay healthy — it's the Mac-side rendering.
+- **Universal — 1920×1080 at 60 fps** (default, ~10 Mbps).
+- **Galaxy S24 — 3120×1440 at 90 fps** (~20 Mbps).
 
-One catch, fixed in the helper: with `minimumFrameInterval` set exactly at the
-panel cadence (e.g. 1/90 on a 90 Hz display), ScreenCaptureKit rejects any
-composite that arrives a hair early from vsync jitter — measurably losing ~8%
-(90 Hz → only 82.5 fps). The helper now sets the interval 10% *below* the
-cadence, which accepts every composite; SCK is change-driven, so a lower gate
-never creates extra frames.
+The profile is chosen on the Mac before starting. The phone follows the Mac's
+stream rate on first run; the in-app 60/90 pill overrides it and is remembered.
+While streaming, tap the top-left corner (or use the pen) to reveal the pill.
 
-Frame rate is demand-driven: static content costs nothing, motion (scrolling,
-window drags, video) flows at up to the configured rate. `tools/vdfpswin`
-(see below) is a ready-made 90/110 Hz test pattern for verifying the stream.
+## Security model
 
-## Notes & caveats
+- Self-signed P-256 TLS identity generated on the Mac and stored 0600.
+- The QR carries the certificate SHA-256 fingerprint; Android refuses any other
+  certificate. No plaintext token or video is sent.
+- Pairing token: 32 random bytes, one use, two-minute expiry.
+- Device secret: 32 random bytes, per phone, revocable by re-pairing.
+- One active phone at a time.
+- Heartbeat every 5 seconds; a silent client is dropped after 15 seconds.
+- The virtual display and helper stop after 10 seconds without an active phone.
+- Mac sleep, display sleep, and screen lock pause the stream and release the
+  virtual display; the phone reconnects after wake/unlock.
+- Never share `host-macos/stream.log`: it may contain a legacy token. The secure
+  app does not print the pairing token or device secret.
 
-- **Display identity required**: on current macOS the `CGVirtualDisplayDescriptor`
-  must carry a unique `vendorID`/`productID`/`serialNumber` identity — otherwise
-  creation fails (returns nil). `vdhelper` derives a **stable** serial from the
-  display's name and pixel size, so macOS remembers its arrangement and mode
-  across restarts (put PhoneDisplay on the left once and it stays there).
-  Different names/sizes get different identities; two instances with the same
-  name and size would collide.
-- **The streamed mode is pinned.** The display offers 3120×1440, but macOS also
-  lists fallback resolutions in Displays. Choosing one scales the captured
-  picture while the pen still uses the old pixel grid, so the pointer drifts.
-  The helper cannot notice this itself — CoreGraphics only refreshes a
-  process's display cache on its run loop — so `pdctl` polls the display from
-  outside and restores the target mode with a session configuration, usually
-  in under a second and without interrupting the stream. The helper also
-  re-applies the mode at startup, so a remembered wrong mode cannot survive a
-  reconnect.
-- **Private API**: `CGVirtualDisplay` is undocumented. Fine for personal use;
-  App Store distribution is not possible with it. If a future macOS removes it,
-  the fallback is a DriverKit system extension (much more work).
-- **Permissions**: creating the display needs none. Capturing it needs
-  **Screen Recording** permission for your terminal (one-time, prompted on the
-  first real capture run). Injecting clicks needs **Device Control and Data
-  Access** (the Accessibility permission on macOS 26+) for that same terminal
-  app — also one-time. `--synthetic` mode bypasses capture entirely.
-- **Injected events must carry a click state.** A bare
-  `CGEventCreateMouseEvent` event is delivered as a hover: the pointer moves,
-  but nothing clicks. `vdhelper` reconstructs the click sequence from the time
-  and distance between taps: first down/up = 1, second = 2, third = 3 (so
-  double- and triple-click work; a right click resets the sequence). If clicks
-  "stop working" after a code change, check this first.
-- **Token-gated, localhost by default.** `pdctl stream` binds `127.0.0.1`;
-  the USB path only needs that (adb reverse connects on the Mac's loopback).
-  The first run creates `~/.phonedisplay-token` (0600), and every client must
-  send `PD01 <token>`; the app gets it from `host:port#token`. `--token`
-  overrides the file. `--bind 0.0.0.0` is for Wi-Fi and still requires the
-  token. Don't paste `stream.log` anywhere — it contains the token.
-- **First picture on connect (and last picture at rest).** Two decoder facts
-  shape this:
-  (a) a new client is sent the cached **GOP** — the last keyframe *plus every
-  frame after it* — so it sees the exact current picture, not a keyframe that
-  can be seconds out of date. The greeting is only sent once a keyframe exists
-  (no more empty first picture while the display is still starting), and a
-  fresh keyframe is forced once the client is live, so its delta chain is safe
-  if a frame went by during the handshake;
-  (b) the phone's decoder keeps the newest picture queued until one more input
-  arrives. On an idle tick the app re-feeds the last access unit once if no
-  output came back, which flushes the final picture of a burst instead of
-  leaving it stuck in the codec. Without this, a window that closed on the Mac
-  could stay on the phone for minutes.
-  Verified on the phone: after a full-screen animation stops, the phone matches
-  the Mac display (mean pixel error ~7/255, i.e. H.264 noise).
-- **Mac cursor, drawn by the phone**: the pointer is not baked into the video.
-  The helper streams tiny cursor packets (~16 bytes, ~60/s while the pointer
-  moves, 1/s heartbeat when idle) and the app draws its own pointer at that
-  position — so the cursor stays smooth and cheap regardless of the video, and
-  it's drawn at **3× the Mac size** (`CursorView.DEFAULT_SCALE`; fixed). To go
-  back to the classic baked-in 1× cursor instead, run the helper directly with
-  `--hw-cursor` (pdctl doesn't expose it). That mode has no cursor heartbeat,
-  so don't combine it with pdctl's 5 s helper-stdout liveness.
-- **Idle = silence, but no disruption**: ScreenCaptureKit only emits frames
-  when the virtual display's content changes. While idle the phone simply
-  keeps showing the last frame and the session stays up — when something
-  moves again it resumes instantly, no reconnect. (Even a minutes-long static
-  desktop is fine.) Cursor packets keep flowing while the pointer moves; the
-  video itself stays silent if nothing else changes. The app's socket read
-  ticks every 250 ms, and each idle tick drains the decoder and (once) re-feeds
-  the last frame, so the **last** picture of a burst is shown instead of
-  staying queued until the next change. A full-screen change (a window closing,
-  a virtual desktop switch) is a large burst and can take a couple of seconds
-  to finish arriving at the 35 Mbps cap.
-- **Test tools**: `tools/vdfpswin` — a full-screen animation window whose
-  Core Animation content updates at the display's own refresh rate, i.e. a
-  true 90/110 Hz test source (`clang -fobjc-arc -framework Cocoa -framework
-  QuartzCore -o vdfpswin vdfpswin.m`; run `~/phonedisplay/tools/vdfpswin`;
-  stop with `pkill -f vdfpswin`). `tools/fpstest.html` shows the same kind of
-  pattern in a browser (rAF follows the display refresh; no build needed).
-- **Keep-awake & self-healing**: `pdctl.py stream` holds the Mac awake via
-  `caffeinate` while it runs (opt out with `--no-caffeinate`) and automatically
-  restarts the capture helper (~3 s) if macOS kills it — e.g. when the screen
-  gets locked — or if it is stopped cleanly with `pkill`. The phone stays
-  connected through these restarts (verified: both a helper restart and a full
-  pdctl restart recover the display and picture on the same TCP session). If
-  pdctl itself dies, the helper sees stdin EOF and removes the virtual display
-  instead of leaving a phantom monitor. A client that stops reading for 10 s,
-  or sends no heartbeat for 15 s, is dropped, so a sleeping phone cannot keep
-  the display alive forever; a disconnect while the pen button is held releases
-  the mouse button. A helper that produces no stdout for 5 s (15 s for its
-  first frame) is restarted.
-- **Self-test**: `python3 tools/selftest.py --probe <path-to-displayprobe>
-  --log host-macos/stream.log` exercises the host protocol end to end:
-  handshake, static picture, GOP replay during motion, cursor heartbeat, input
-  round-trip, live 60/90 fps change, two clients, and bad-greeting rejection.
-  All 8 pass with `--probe` and a live stream log; missing inputs show `SKIP`
-  (not a pass). The two-client check asserts both clients actually receive
-  video. Token comes from `~/.phonedisplay-token` or `--token`.
-- **Pixel-perfect on the S24 Ultra**: the phone app draws edge-to-edge,
-  including the camera-cutout band, so a 3120×1440 stream maps 1:1 onto the
-  physical screen — no black strip, no scaling.
-- **Known macOS 27 bug — dragging a *fullscreen* Space to the phone display
-  blacks out the built-in display.** This is an OS regression, not a
-  PhoneDisplay defect: the same symptom is reported with physical external
-  monitors on 27.0/27.0.1 (Apple Community thread 256357160, r/MacOSBeta
-  "full screen app turns external/internal display black when dragged via
-  Mission Control"). Moving a fullscreen app's Space ("desktop tab") in Mission
-  Control makes the source display go black — only the Dock stays — until you
-  switch that display to another Space. The Spaces database confirms it:
-  `com.apple.spaces` assigns a type-4 (fullscreen) Space to the PhoneDisplay,
-  and the built-in's Space entry is left stale. **Workaround:** leave fullscreen
-  first (`Ctrl-Cmd-F`), drag the normal window to the phone display, then
-  fullscreen it *there* (`Ctrl-Cmd-F` again). A fullscreen Space created on the
-  phone display itself is fine; only moving an existing fullscreen Space between
-  displays triggers it. No macOS update fixed this as of 27.0.1 (26A434).
-- **Display cleanup**: after the helper exits, macOS may take a short while to
-  reap the virtual display, and several "PhoneDisplay" entries can briefly
-  appear in Displays settings if you crashed earlier runs. They do clear on
-  their own; no reboot needed.
-- **Multi-monitor**: each `vdhelper` instance creates one extra display; run
-  multiple instances for multiple virtual monitors.
+## Developer harness
 
-## Wire protocol
+The Python TLS client is for testing without a phone:
 
-```
-TCP, port 8420; handshake:
-  phone → host : "PD01 <token>\n"
-  host  → phone: "PD01 <width> <height> <fps> <codec>\n"
-  then  : repeated packets, in both directions:
-            uint32_be length
-            uint8     flags (bit0: keyframe; bit1: cursor packet; bit2: input event;
-                              bit3: control)
-            uint8[length] payload:
-              - video:  Annex-B H.264 access unit (keyframes embed SPS/PPS)
-              - cursor: uint8 visible | int32_be x | int32_be y
-                        (9 bytes, virtual-display pixel coordinates)
-              - input : uint8 kind (0 = move, 1 = button down, 2 = button up)
-                        | uint8 buttons (bit0 = secondary / pen side button)
-                        | int32_be x | int32_be y
-                        (10 bytes, phone → host; injected as real macOS mouse events)
-              - control: uint8 cmd | uint8 arg
-                        cmd 1 = capture frame-rate cap (arg = fps, the phone's
-                        60/90 selector); applied live via SCK's
-                        minimumFrameInterval, re-applied after helper restarts
+```sh
+# Mac app must be running with PHONEDISPLAY_DEV=1 (writes dev-pairing.json 0600)
+cd mac/PhoneDisplay
+PHONEDISPLAY_DEV=1 PHONEDISPLAY_SYNTHETIC=1 ./PhoneDisplay.app/Contents/MacOS/PhoneDisplay --autostart
+
+# in another terminal
+python3 tools/testclient_tls.py 8
 ```
 
-New clients immediately receive the current **GOP** (the last keyframe plus the
-frames that followed it) and the cursor packet, so the picture and pointer
-appear without waiting for new updates — current even if the screen has been
-static since the last keyframe. Input packets are read independently of video
-flow, so a client that is slow to consume video still controls the Mac
-immediately; a fresh keyframe is forced once the client is live.
+It verifies the certificate fingerprint, pairs once, reconnects with the stored
+device secret, sends heartbeats, and prints stream statistics. It never prints
+the token or secret.
 
-(Internal helper→pdctl header: `PDH1 <w> <h> <fps> <codec> <display-id>`; the
-display ID feeds the resolution watchdog and never reaches the phone.)
+The old `host-macos/pdctl.py` / `tools/testclient.py` plain-TCP harness remains
+only for the legacy helper workflow and does not speak to the secure Mac app.
+
+## Release packaging
+
+```sh
+./tools/package_release.sh
+```
+
+Produces:
+
+```
+dist/PhoneDisplay-0.1.0-macOS.dmg
+dist/PhoneDisplay-0.1.0-android.apk
+dist/SHA256SUMS
+```
+
+Upload those three files to a GitHub Release. The DMG is ad-hoc signed; the APK
+is debug-signed. See `RELEASE.md` for the download/install text.
+
+## Current limits
+
+- The secure Android APK has not yet been installed on a physical phone in this
+  workspace (no `adb` device was available). The Mac secure host, QR pairing,
+  stored-secret reconnect, one-phone busy rejection, 1080p60, and S24 1440p90
+  paths are verified with the TLS test client and synthetic/real capture.
+- No Bonjour discovery yet; pairing is QR-only in v1.
+- No Windows host yet.
+- The macOS 27 fullscreen-Space bug is an OS bug; move a normal window to the
+  phone display and fullscreen it there.
+
+## Repository layout
+
+```
+mac/PhoneDisplay/   SwiftUI app, TLS host, pairing, helper lifecycle
+android/            Kotlin Android client
+host-macos/         vdhelper + legacy Python host harness
+tools/              TLS test client, release packaging
+docs/               product design and implementation notes
+```

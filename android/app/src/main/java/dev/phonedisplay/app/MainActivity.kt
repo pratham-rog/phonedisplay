@@ -1,10 +1,12 @@
 package dev.phonedisplay.app
 
+import android.Manifest
 import android.app.Activity
 import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
 import android.content.IntentFilter
+import android.content.pm.PackageManager
 import android.media.MediaCodec
 import android.media.MediaFormat
 import android.os.Build
@@ -21,17 +23,20 @@ import android.view.SurfaceView
 import android.view.View
 import android.view.WindowManager
 import android.widget.Button
-import android.widget.EditText
 import android.widget.LinearLayout
 import android.widget.TextView
+import com.google.zxing.integration.android.IntentIntegrator
+import org.json.JSONArray
+import org.json.JSONObject
 import java.io.BufferedInputStream
+import java.io.ByteArrayOutputStream
 import java.io.IOException
 import java.io.InputStream
-import java.net.InetSocketAddress
 import java.net.Socket
 import java.net.SocketTimeoutException
 import java.nio.ByteBuffer
 import java.util.concurrent.TimeUnit
+import javax.net.ssl.SSLSocket
 
 /**
  * PhoneDisplay — turns this phone into a second monitor for the Mac.
@@ -55,34 +60,35 @@ class MainActivity : Activity(), SurfaceHolder.Callback {
 
     companion object {
         private const val TAG = "PhoneDisplay"
-        private const val DEFAULT_ADDR = "127.0.0.1:8420"
         private const val CONNECT_TIMEOUT_MS = 5_000
-        // The host creates the virtual display on demand, so the greeting only
-        // arrives after the first keyframe exists — allow for SCK startup.
         private const val GREETING_TIMEOUT_MS = 15_000
-        // Read tick while streaming. Deliberately short: the stream is
-        // change-driven, so when the Mac goes still we wake up every tick and
-        // flush the decoder instead of waiting for a next packet that may
-        // never come (the phone would keep showing the previous picture).
         private const val FRAME_TIMEOUT_MS = 250
         private const val MID_PACKET_STALL_MS = 10_000
         private const val MAX_FRAME_BYTES = 8 shl 20
         private const val PEN_FALLBACK_IDLE_MS = 20_000L
+        private const val REQUEST_SCAN = 1001
+        private const val REQUEST_CAMERA = 1002
     }
 
     private lateinit var surfaceView: SurfaceView
     private lateinit var cursorView: CursorView
     private lateinit var overlay: View
-    private lateinit var hostField: EditText
     private lateinit var statusView: TextView
-    private lateinit var connectButton: Button
+    private lateinit var scanButton: Button
+    private lateinit var forgetButton: Button
+    private lateinit var macView: TextView
     private lateinit var fpsPill: LinearLayout
     private lateinit var fps60View: TextView
     private lateinit var fps90View: TextView
     private lateinit var fpsHotspot: View
 
+    private lateinit var store: PairingStore
+    @Volatile private var savedDevice: SavedDevice? = null
+    private var pairingWorker: Thread? = null
+
     /** Phone-chosen stream frame rate (capture cap on the host). */
-    private var chosenFps = 90
+    @Volatile private var chosenFps = 60
+    @Volatile private var fpsExplicit = false
 
     @Volatile private var surface: Surface? = null
     @Volatile private var running = false
@@ -103,7 +109,7 @@ class MainActivity : Activity(), SurfaceHolder.Callback {
     @Volatile private var streamH = 0
 
     private val outLock = Any()
-    private val inputQueue = java.util.concurrent.ArrayBlockingQueue<ByteArray>(512)
+    private val inputQueue = InputPacketQueue()
     private var heldButton = -1                  // -1 none, 0 left, 1 right
     private var penButtonHeld = false            // side button, from last event
     private var lastPenX = 0
@@ -338,10 +344,7 @@ class MainActivity : Activity(), SurfaceHolder.Callback {
             (y ushr 24).toByte(), ((y ushr 16) and 0xFF).toByte(),
             ((y ushr 8) and 0xFF).toByte(), (y and 0xFF).toByte(),
         )
-        if (!inputQueue.offer(rec)) {                     // full: keep the newest
-            inputQueue.poll()
-            inputQueue.offer(rec)
-        }
+        inputQueue.offer(rec)
     }
 
     // ---------------------------------------------------- frame-rate selector
@@ -366,6 +369,7 @@ class MainActivity : Activity(), SurfaceHolder.Callback {
 
     /** Applies the choice: persists it and live-applies on the running stream. */
     private fun setFpsChoice(fps: Int) {
+        fpsExplicit = true
         if (fps != chosenFps) {
             chosenFps = fps
             getSharedPreferences("pd", MODE_PRIVATE).edit().putInt("fps", fps).apply()
@@ -382,16 +386,26 @@ class MainActivity : Activity(), SurfaceHolder.Callback {
     }
 
     /**
-     * Control packet → host: u32 len | u8 flags (0x08) | u8 cmd | u8 arg.
-     * cmd 1 = capture frame-rate cap; cmd 2 = heartbeat. Goes through the same
-     * queue as input (never touch the socket on the UI thread).
+     * Control packet → host: u32 len | u8 flags (0x04) | UTF-8 JSON.
+     * cmd 1 = capture frame-rate cap; cmd 2 = heartbeat; cmd 3 = keyframe.
+     * Goes through the same queue as input (never touch the socket on the UI
+     * thread).
      */
     private fun sendControl(cmd: Int, arg: Int) {
-        val rec = byteArrayOf(0, 0, 0, 2, 0x08, cmd.toByte(), arg.toByte())
-        if (!inputQueue.offer(rec)) {
-            inputQueue.poll()
-            inputQueue.offer(rec)
-        }
+        val payload = when (cmd) {
+            1 -> JSONObject().put("type", "fps").put("value", arg)
+            2 -> JSONObject().put("type", "heartbeat")
+            3 -> JSONObject().put("type", "keyframe")
+            else -> return
+        }.toString().toByteArray(Charsets.UTF_8)
+        val rec = ByteArray(5 + payload.size)
+        rec[0] = (payload.size ushr 24).toByte()
+        rec[1] = (payload.size ushr 16).toByte()
+        rec[2] = (payload.size ushr 8).toByte()
+        rec[3] = payload.size.toByte()
+        rec[4] = 0x04
+        payload.copyInto(rec, 5)
+        inputQueue.offer(rec)
     }
 
     /** Drains queued input packets; sends a heartbeat every 5 s when idle. */
@@ -445,17 +459,21 @@ class MainActivity : Activity(), SurfaceHolder.Callback {
         surfaceView = findViewById(R.id.surface)
         cursorView = findViewById(R.id.cursor)
         overlay = findViewById(R.id.overlay)
-        hostField = findViewById(R.id.host)
         statusView = findViewById(R.id.status)
+        scanButton = findViewById(R.id.scan)
+        forgetButton = findViewById(R.id.forget)
+        macView = findViewById(R.id.mac)
         fpsPill = findViewById(R.id.fpsPill)
         fps60View = findViewById(R.id.fps60)
         fps90View = findViewById(R.id.fps90)
         fpsHotspot = findViewById(R.id.fpsHotspot)
-        connectButton = findViewById(R.id.connect)
+
+        store = PairingStore(this)
+        savedDevice = store.load()
 
         val prefs = getSharedPreferences("pd", MODE_PRIVATE)
-        hostField.setText(prefs.getString("host", DEFAULT_ADDR) ?: DEFAULT_ADDR)
-        chosenFps = if (prefs.getInt("fps", 90) == 60) 60 else 90
+        fpsExplicit = prefs.contains("fps")
+        chosenFps = if (prefs.getInt("fps", 60) == 90) 90 else 60
         updateFpsUi()
         fps60View.setOnClickListener { setFpsChoice(60) }
         fps90View.setOnClickListener { setFpsChoice(90) }
@@ -464,6 +482,10 @@ class MainActivity : Activity(), SurfaceHolder.Callback {
         fpsHotspot.setOnClickListener { revealPill(autoHide = true) }
         revealPill(autoHide = false)     // visible on the connect screen
 
+        scanButton.setOnClickListener { scanPairing() }
+        forgetButton.setOnClickListener { forgetMac() }
+        updateSavedUi()
+
         surfaceView.holder.addCallback(this)
 
         Thread({ inputSenderLoop() }, "pd-input").apply {
@@ -471,10 +493,9 @@ class MainActivity : Activity(), SurfaceHolder.Callback {
             start()
         }
 
-        connectButton.setOnClickListener {
-            val addr = hostField.text.toString().ifBlank { DEFAULT_ADDR }
-            prefs.edit().putString("host", addr).apply()
-            startStreaming(addr)
+        if (savedDevice == null) {
+            overlay.visibility = View.VISIBLE
+            setStatus(getString(R.string.scan_prompt))
         }
     }
 
@@ -482,6 +503,7 @@ class MainActivity : Activity(), SurfaceHolder.Callback {
         running = false
         try { socket?.close() } catch (_: Exception) {}
         worker?.interrupt()
+        pairingWorker?.interrupt()
         super.onDestroy()
     }
 
@@ -492,7 +514,8 @@ class MainActivity : Activity(), SurfaceHolder.Callback {
         setStatus(getString(R.string.ready))
         // Auto-connect on launch / when the surface comes back, so returning
         // to the app never leaves it stuck on a stale screen.
-        if (!running) startStreaming(hostField.text.toString().ifBlank { DEFAULT_ADDR })
+        val device = savedDevice
+        if (!running && device != null) startStreaming(device)
     }
 
     override fun surfaceChanged(holder: SurfaceHolder, format: Int, width: Int, height: Int) {}
@@ -510,32 +533,205 @@ class MainActivity : Activity(), SurfaceHolder.Callback {
         runOnUiThread { statusView.text = text }
     }
 
-    private fun startStreaming(addr: String) {
-        // Invalidate any previous worker first, even if we cannot start a new
-        // one: an old loop must never keep the old session alive.
+    private fun updateSavedUi() {
+        val device = savedDevice
+        if (device != null) {
+            macView.text = getString(R.string.paired_with, device.name)
+            macView.visibility = View.VISIBLE
+            forgetButton.visibility = View.VISIBLE
+        } else {
+            macView.visibility = View.GONE
+            forgetButton.visibility = View.GONE
+        }
+    }
+
+    private fun scanPairing() {
+        if (Build.VERSION.SDK_INT >= 23 &&
+            checkSelfPermission(Manifest.permission.CAMERA) != PackageManager.PERMISSION_GRANTED
+        ) {
+            requestPermissions(arrayOf(Manifest.permission.CAMERA), REQUEST_CAMERA)
+            return
+        }
+        launchScanner()
+    }
+
+    private fun launchScanner() {
+        IntentIntegrator(this)
+            .setDesiredBarcodeFormats(IntentIntegrator.QR_CODE)
+            .setPrompt("Scan the pairing QR on your Mac")
+            .setBeepEnabled(false)
+            .setOrientationLocked(false)
+            .initiateScan()
+    }
+
+    override fun onRequestPermissionsResult(
+        requestCode: Int,
+        permissions: Array<out String>,
+        grantResults: IntArray,
+    ) {
+        super.onRequestPermissionsResult(requestCode, permissions, grantResults)
+        if (requestCode == REQUEST_CAMERA) {
+            if (grantResults.firstOrNull() == PackageManager.PERMISSION_GRANTED) {
+                launchScanner()
+            } else {
+                setStatus("Camera permission is needed to scan the QR.")
+            }
+        }
+    }
+
+    @Deprecated("Deprecated in Java")
+    override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
+        val result = IntentIntegrator.parseActivityResult(requestCode, resultCode, data)
+        if (result == null) {
+            super.onActivityResult(requestCode, resultCode, data)
+            return
+        }
+        val contents = result.contents
+        if (contents.isNullOrBlank()) {
+            setStatus("Scan cancelled.")
+            return
+        }
+        val info = PairingParser.parse(contents)
+        if (info == null) {
+            setStatus("That QR is not a PhoneDisplay pairing code.")
+            return
+        }
+        startPairing(info)
+    }
+
+    private fun startPairing(info: PairingInfo) {
+        invalidateSession()
+        scanButton.isEnabled = false
+        overlay.visibility = View.VISIBLE
+        setStatus("Pairing with ${info.name} …")
+        pairingWorker = Thread({ pairWith(info) }, "pd-pair").also { it.start() }
+    }
+
+    private fun pairWith(info: PairingInfo) {
+        try {
+            connectPinned(
+                info.host,
+                info.port,
+                info.fingerprint,
+            ).use { sock ->
+                val input = BufferedInputStream(sock.getInputStream(), 1 shl 16)
+                val out = sock.getOutputStream()
+                sock.soTimeout = GREETING_TIMEOUT_MS
+                val request = JSONObject()
+                    .put("type", "pair")
+                    .put("v", 1)
+                    .put("token", info.token)
+                    .put(
+                        "device",
+                        JSONObject()
+                            .put("name", Build.MODEL)
+                            .put("model", Build.MODEL),
+                    )
+                synchronized(outLock) {
+                    out.write((request.toString() + "\n").toByteArray(Charsets.UTF_8))
+                    out.flush()
+                }
+                val line = readJsonLine(input) ?: throw IOException("no response from Mac")
+                val response = JSONObject(line)
+                if (response.optString("type") != "paired") {
+                    throw IOException(response.optString("message", "Pairing failed"))
+                }
+                val device = SavedDevice(
+                    host = info.host,
+                    port = info.port,
+                    fingerprint = info.fingerprint,
+                    hostID = info.hostID,
+                    deviceID = response.getString("deviceId"),
+                    secret = response.getString("secret"),
+                    name = info.name,
+                )
+                store.save(device)
+                runOnUiThread {
+                    savedDevice = device
+                    updateSavedUi()
+                    scanButton.isEnabled = true
+                    startStreaming(device)
+                }
+            }
+        } catch (e: Exception) {
+            Log.w(TAG, "pairing failed", e)
+            runOnUiThread {
+                scanButton.isEnabled = true
+                overlay.visibility = View.VISIBLE
+                setStatus("Pairing failed: ${e.message ?: "unknown error"}")
+            }
+        }
+    }
+
+    private fun forgetMac() {
+        invalidateSession()
+        store.clear()
+        savedDevice = null
+        updateSavedUi()
+        overlay.visibility = View.VISIBLE
+        scanButton.isEnabled = true
+        setStatus(getString(R.string.scan_prompt))
+        revealPill(autoHide = false)
+    }
+
+    /**
+     * Wi-Fi first. If the Mac's LAN address is unreachable, try the USB
+     * loopback created by `adb reverse tcp:<port> tcp:<port>`. The certificate
+     * pin is identical on both paths, so this cannot weaken authentication.
+     */
+    private fun connectPinned(host: String, port: Int, fingerprint: String): SSLSocket {
+        return try {
+            PinnedTls.connect(host, port, fingerprint, CONNECT_TIMEOUT_MS)
+        } catch (e: Exception) {
+            if (host == "127.0.0.1") throw e
+            Log.i(TAG, "LAN connect failed; trying USB loopback")
+            PinnedTls.connect("127.0.0.1", port, fingerprint, CONNECT_TIMEOUT_MS)
+        }
+    }
+
+    private fun invalidateSession(): Int {
         val id = synchronized(sessionLock) { ++sessionId }
-        connectButton.isEnabled = false
         running = false
         sockOut = null
         heldButton = -1
         inputQueue.clear()               // drop stale pen packets from the old link
         try { socket?.close() } catch (_: Exception) {}   // wake a blocked old worker
         worker?.interrupt()
+        return id
+    }
+
+    private fun startStreaming(device: SavedDevice) {
+        val id = invalidateSession()
         if (surface == null) {
-            connectButton.isEnabled = true
+            scanButton.isEnabled = true
             setStatus(getString(R.string.no_surface))
             return
         }
+        scanButton.isEnabled = false
         running = true
-        worker = Thread({ streamLoop(addr, id) }, "pd-stream").also { it.start() }
+        worker = Thread({ streamLoop(device, id) }, "pd-stream").also { it.start() }
     }
 
-    private fun streamLoop(addr: String, id: Int) {
+    private fun streamLoop(device: SavedDevice, id: Int) {
         while (running && id == sessionId) {
             try {
-                runSession(addr, id)
+                runSession(device, id)
                 if (!running || id != sessionId) break
                 setStatus(getString(R.string.stream_ended))
+            } catch (e: PairingRequiredException) {
+                if (id != sessionId) break
+                Log.w(TAG, "pairing required: ${e.message}")
+                runOnUiThread {
+                    if (id != sessionId) return@runOnUiThread
+                    store.clear()
+                    savedDevice = null
+                    updateSavedUi()
+                    overlay.visibility = View.VISIBLE
+                    scanButton.isEnabled = true
+                    setStatus(e.message ?: "Pair this phone again.")
+                    revealPill(autoHide = false)
+                }
+                break
             } catch (e: Exception) {
                 if (!running || id != sessionId) break
                 Log.w(TAG, "session error", e)
@@ -544,7 +740,7 @@ class MainActivity : Activity(), SurfaceHolder.Callback {
             runOnUiThread {
                 if (id != sessionId) return@runOnUiThread
                 overlay.visibility = View.VISIBLE
-                connectButton.isEnabled = true
+                scanButton.isEnabled = true
                 revealPill(autoHide = false)     // connect screen: pill available
             }
             if (id == sessionId) {
@@ -560,50 +756,74 @@ class MainActivity : Activity(), SurfaceHolder.Callback {
         }
     }
 
-    private fun runSession(addr: String, id: Int) {
-        val hash = addr.lastIndexOf('#')
-        val token = if (hash >= 0) addr.substring(hash + 1) else ""
-        val hostPort = if (hash >= 0) addr.substring(0, hash) else addr
-        val host = hostPort.substringBefore(":").ifBlank { "127.0.0.1" }
-        val port = hostPort.substringAfter(":", "8420").toIntOrNull() ?: 8420
-        if (token.isBlank())
-            throw IOException("missing #token — paste host:port#token from pdctl stream")
-
-        setStatus("connecting to $host:$port …")
-        Socket().use { sock ->
+    private fun runSession(device: SavedDevice, id: Int) {
+        setStatus("connecting to ${device.name} …")
+        connectPinned(
+            device.host,
+            device.port,
+            device.fingerprint,
+        ).use { sock ->
             socket = sock
-            sock.tcpNoDelay = true
-            sock.connect(InetSocketAddress(host, port), CONNECT_TIMEOUT_MS)
             if (!running || id != sessionId) return
 
             val input = BufferedInputStream(sock.getInputStream(), 1 shl 20)
             val out = sock.getOutputStream()
-
+            val hello = JSONObject()
+                .put("type", "hello")
+                .put("v", 1)
+                .put("deviceId", device.deviceID)
+                .put("auth", device.secret)
+                .put(
+                    "display",
+                    JSONObject().put("width", 1920).put("height", 1080).put("refresh", 60),
+                )
+                .put(
+                    "decode",
+                    JSONObject()
+                        .put("codecs", JSONArray().put("h264"))
+                        .put("maxWidth", 1920)
+                        .put("maxHeight", 1080),
+                )
             sock.soTimeout = GREETING_TIMEOUT_MS
-            // The greeting must hit the wire *before* the input sender may use
-            // this socket, or a pen packet could precede the handshake.
             synchronized(outLock) {
-                out.write("PD01 $token\n".toByteArray(Charsets.US_ASCII))
+                out.write((hello.toString() + "\n").toByteArray(Charsets.UTF_8))
                 out.flush()
             }
 
-            val hello = readLine(input) ?: throw IOException("no greeting from host")
-            val parts = hello.trim().split(" ")
-            if (parts.size < 5 || parts[0] != "PD01") throw IOException("bad greeting: $hello")
+            val line = readJsonLine(input) ?: throw IOException("no response from Mac")
+            val response = JSONObject(line)
+            if (response.optString("type") == "error") {
+                val code = response.optString("code")
+                val message = response.optString("message", "the Mac refused the connection")
+                if (code == "revoked") throw PairingRequiredException(message)
+                throw IOException(message)
+            }
+            if (response.optString("type") != "stream") {
+                throw IOException("unexpected reply from Mac")
+            }
             if (!running || id != sessionId) return
-            val width = parts[1].toInt()
-            val height = parts[2].toInt()
-            val fps = parts[3].toInt()
+
+            val width = response.optInt("width", 1920)
+            val height = response.optInt("height", 1080)
+            val fps = response.optInt("fps", 60)
+            val codec = response.optString("codec", "h264")
+            if (codec != "h264") throw IOException("unsupported codec: $codec")
             streamW = width
             streamH = height
             Log.i(TAG, "stream $width x $height @ $fps")
             setStatus("streaming ${width}x$height @ $fps")
             cursorView.setVideoSize(width, height)
-            sockOut = out              // only after the host accepted the token
-            sendControl(1, chosenFps)     // apply the app's frame-rate choice
+            sockOut = out              // only after the Mac accepted the device secret
+            if (!fpsExplicit) {
+                // Follow the Mac's profile until the user picks 60 or 90.
+                chosenFps = if (fps == 90) 90 else 60
+                mainHandler.post { updateFpsUi() }
+            }
+            sendControl(1, chosenFps)
+            sendControl(3, 0)          // ask for a keyframe on a fresh session
 
             sock.soTimeout = FRAME_TIMEOUT_MS
-            decodeLoop(input, width, height, fps, id)
+            decodeLoop(input, width, height, id)
         }
         if (id == sessionId) {
             socket = null
@@ -613,7 +833,7 @@ class MainActivity : Activity(), SurfaceHolder.Callback {
 
     // ------------------------------------------------------ decoding
 
-    private fun decodeLoop(input: InputStream, width: Int, height: Int, fps: Int, id: Int) {
+    private fun decodeLoop(input: InputStream, width: Int, height: Int, id: Int) {
         var decoder: MediaCodec? = null
         var frameIndex = 0L
         var dropped = 0L
@@ -624,8 +844,9 @@ class MainActivity : Activity(), SurfaceHolder.Callback {
         var lastPts = 0L
         var nudges = 0
         var waitForKeyframe = false
-        var statsAt = android.os.SystemClock.elapsedRealtime()
+        var statsAt = SystemClock.elapsedRealtime()
         var statsFrames = 0L
+        val sessionStartNs = SystemClock.elapsedRealtimeNanos()
 
         try {
             while (running && id == sessionId) {
@@ -683,7 +904,7 @@ class MainActivity : Activity(), SurfaceHolder.Callback {
                     dropped++
                     continue
                 }
-                val ptsUs = frameIndex * 1_000_000L / fps
+                val ptsUs = (SystemClock.elapsedRealtimeNanos() - sessionStartNs) / 1_000
                 if (!feedDecoder(decoder, au, length, ptsUs)) {
                     // A hole in the delta chain cannot be repaired by feeding
                     // more deltas; wait for the next keyframe.
@@ -780,13 +1001,28 @@ class MainActivity : Activity(), SurfaceHolder.Callback {
     }
 
     private fun feedDecoder(decoder: MediaCodec, au: ByteArray, length: Int, ptsUs: Long): Boolean {
-        val idx = decoder.dequeueInputBuffer(10_000)
-        if (idx < 0) return false
-        val buf = decoder.getInputBuffer(idx) ?: return false
-        buf.clear()
-        buf.put(au, 0, length)
-        decoder.queueInputBuffer(idx, 0, length, ptsUs, 0)
-        return true
+        // A full input queue usually means output buffers are waiting, not
+        // that the GOP is broken. Drain outputs and retry briefly before
+        // declaring a hole; otherwise every still-frame burst can force a
+        // needless keyframe wait.
+        val deadline = android.os.SystemClock.elapsedRealtime() + 150
+        while (true) {
+            val idx = decoder.dequeueInputBuffer(10_000)
+            if (idx >= 0) {
+                val buf = decoder.getInputBuffer(idx)
+                if (buf == null) {
+                    // Return the buffer to the codec instead of leaking it.
+                    decoder.queueInputBuffer(idx, 0, 0, 0, 0)
+                } else {
+                    buf.clear()
+                    buf.put(au, 0, length)
+                    decoder.queueInputBuffer(idx, 0, length, ptsUs, 0)
+                    return true
+                }
+            }
+            drainDecoder(decoder)
+            if (android.os.SystemClock.elapsedRealtime() >= deadline) return false
+        }
     }
 
     /** Releases decoded frames; returns how many were released. */
@@ -829,14 +1065,16 @@ class MainActivity : Activity(), SurfaceHolder.Callback {
         b[at] == 0.toByte() && b[at + 1] == 0.toByte() &&
                 b[at + 2] == 0.toByte() && b[at + 3] == 1.toByte()
 
-    private fun readLine(input: InputStream): String? {
-        val sb = StringBuilder()
+    private fun readJsonLine(input: InputStream): String? {
+        val buffer = ByteArrayOutputStream()
         while (true) {
             val b = input.read()
-            if (b < 0) return if (sb.isEmpty()) null else sb.toString()
-            if (b == '\n'.code) return sb.toString()
-            if (b != '\r'.code) sb.append(b.toChar())
-            if (sb.length > 512) return sb.toString()
+            if (b < 0) {
+                return if (buffer.size() == 0) null else buffer.toString("UTF-8")
+            }
+            if (b == '\n'.code) return buffer.toString("UTF-8").trimEnd('\r')
+            if (b != '\r'.code) buffer.write(b)
+            if (buffer.size() > 64 * 1024) throw IOException("handshake too large")
         }
     }
 
@@ -890,3 +1128,5 @@ class MainActivity : Activity(), SurfaceHolder.Callback {
         return true
     }
 }
+
+private class PairingRequiredException(message: String) : IOException(message)

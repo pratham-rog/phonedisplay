@@ -11,19 +11,20 @@ open PhoneDisplay.app
 ```
 
 `build.sh` runs the core checks, builds the app and helper, bundles them, and
-ad-hoc signs the app. The app is unsigned by Apple, so a downloaded copy needs
-the usual **Open Anyway** approval.
+ad-hoc signs the app. A downloaded copy needs the usual **Open Anyway** approval.
 
 ## Current slice
 
 - Permission checklist for Screen Recording and Accessibility.
-- Starts `vdhelper` on the first authenticated client and tears it down after
+- Secure TLS listener with a pinned P-256 self-signed identity.
+- Two-minute, one-use QR pairing; per-device 32-byte secrets in 0600
+  `devices.json`; one active phone.
+- Starts `vdhelper` on the first authenticated phone and tears it down after
   10 seconds without one.
-- 1920×1080 at 60 fps, 10 Mbps.
-- Existing `PD01 <token>` protocol on TCP port 8420, so the current Android app
-  and `tools/testclient.py` work unchanged.
-- QR payload for the new Android app: `phonedisplay://connect?v=1&...`.
-- Plain TCP only. TLS and per-device pairing are the next slice.
+- 1920×1080 at 60 fps (universal) or 3120×1440 at 90 fps (Galaxy S24 profile).
+- Sleep, display-sleep, and screen-lock pause.
+- Binary H.264/cursor/input protocol after the JSON `pair`/`hello` handshake.
+- The old plain-TCP `SocketServer`/`StreamHub` files were removed.
 
 ## Developer flags
 
@@ -32,26 +33,35 @@ the usual **Open Anyway** approval.
 open PhoneDisplay.app --args --autostart
 
 # Synthetic video, no Screen Recording permission needed.
-open PhoneDisplay.app --args --autostart --synthetic
+PHONEDISPLAY_SYNTHETIC=1 ./PhoneDisplay.app/Contents/MacOS/PhoneDisplay --autostart
 
-# Use a helper outside the bundle.
-PHONEDISPLAY_HELPER=/path/to/vdhelper open PhoneDisplay.app
+# Write a 0600 dev-pairing.json for tools/testclient_tls.py.
+PHONEDISPLAY_DEV=1 PHONEDISPLAY_SYNTHETIC=1 \
+  ./PhoneDisplay.app/Contents/MacOS/PhoneDisplay --autostart
 ```
 
-The helper is at `PhoneDisplay.app/Contents/Helpers/vdhelper`.
+`PHONEDISPLAY_HELPER` overrides the bundled helper path for development.
 
-## Checks
+## Files
+
+- `PairingService.swift` — TLS identity, pairing window, known devices.
+- `TLSIdentity.swift` — P-256 identity generation/import and fingerprint.
+- `HostServer.swift` — TLS listener, helper lifecycle, frame cache, one-phone
+  policy, pause/resume.
+- `ClientSession.swift` — JSON handshake, framing, heartbeat, input/control.
+- `AppModel.swift` / `ContentView.swift` — app state, permissions, QR UI,
+  profile picker.
+- `Sources/PhoneDisplayCore` — shared payload, framing, token, and crypto
+  helpers with an assert-based check executable.
+
+## Tests
 
 ```sh
-swift run PhoneDisplayCoreChecks
-python3 ../../tools/testclient.py 127.0.0.1 8420 5
+swift run -c release PhoneDisplayCoreChecks
 ```
 
-The token is read from `~/.phonedisplay-token`; never print or commit it.
+The TLS path is exercised end-to-end with:
 
-## Permissions
-
-The app is the responsible process for both permissions. Grant Screen Recording
-to **PhoneDisplay**, not to `vdhelper`. Screen Recording may require a restart;
-use **Restart app** in the window. Accessibility is needed for clicks and S-Pen
-input; pointer movement works without it.
+```sh
+python3 ../../tools/testclient_tls.py 8
+```
