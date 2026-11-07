@@ -14,7 +14,8 @@ are blocked because no adb device is attached.**
   S-Pen/input, 60/90 selector, queue priority for button events.
 - Tests: `PhoneDisplayCoreChecks` 22 checks; `InputPacketQueueTest` 3 checks;
   Python TLS pairing/reconnect; one-phone busy rejection; synthetic 1080p60 and
-  1440p90.
+  1440p90; pairing expiry rejection; certificate fingerprint match. Real
+  capture at 1080p60 passed under a direct Terminal launch.
 - Packaging: `tools/package_release.sh` → DMG, APK, SHA256SUMS.
 
 ## Open work
@@ -25,8 +26,10 @@ are blocked because no adb device is attached.**
    idle teardown, and USB (`adb reverse tcp:8420 tcp:8420`).
 3. Re-grant Screen Recording and Accessibility to the final app build. Ad-hoc
    rebuilds reset TCC.
-4. Test pairing expiry (2 min), certificate mismatch, and a second phone busy.
-5. Run a final real-capture test with the app-level TCC grant.
+4. Test actual Android certificate-mismatch rejection on the phone (the Python
+   fingerprint match/refusal check and pairing expiry already pass).
+5. Run a final real-capture test with the app-level TCC grant after the final
+   ad-hoc rebuild.
 6. Remaining deferred: Bonjour discovery, Windows host, stable signing keys,
    app icon, physical S-Pen 25 s idle-off test.
 7. Known macOS 27 fullscreen-Space bug is an OS issue; use the normal-window
@@ -42,5 +45,5 @@ are blocked because no adb device is attached.**
 - `PHONEDISPLAY_DEV=1` writes `dev-pairing.json` (0600); delete it before a
   fresh pairing test.
 - Test devices live in `~/Library/Application Support/PhoneDisplay/devices.json`
-  (0600) and `~/.phonedisplay-test-device*.json` (0600). Remove test entries
-  before a clean handoff.
+  (0600) and `~/.phonedisplay-test-device*.json` (0600). They were removed for
+  this handoff, so the next launch starts with no paired phone.
