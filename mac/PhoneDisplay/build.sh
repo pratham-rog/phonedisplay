@@ -45,8 +45,23 @@ cat > "$APP/Contents/Info.plist" <<'PLIST'
 PLIST
 
 plutil -lint "$APP/Contents/Info.plist"
-codesign --force --sign - --identifier dev.phonedisplay.helper "$APP/Contents/Helpers/vdhelper" >/dev/null
-codesign --force --deep --sign - --identifier dev.phonedisplay.app "$APP" >/dev/null
+
+SIGN_IDENTITY="${PHONEDISPLAY_SIGN_IDENTITY:-PhoneDisplay Local Signing}"
+SIGN_KEYCHAIN="${PHONEDISPLAY_SIGN_KEYCHAIN:-$HOME/Library/Keychains/PhoneDisplay-Signing.keychain-db}"
+SIGN_PASSWORD_FILE="${PHONEDISPLAY_SIGN_PASSWORD_FILE:-$HOME/Library/Application Support/PhoneDisplay/signing/keychain-password}"
+if [[ -f "$SIGN_KEYCHAIN" && -f "$SIGN_PASSWORD_FILE" ]]; then
+    security unlock-keychain -p "$(<"$SIGN_PASSWORD_FILE")" "$SIGN_KEYCHAIN" >/dev/null
+    SIGN_ARGS=(--sign "$SIGN_IDENTITY" --keychain "$SIGN_KEYCHAIN")
+else
+    echo "warning: stable signing identity not found; using ad-hoc signature" >&2
+    echo "         macOS permissions will not survive a rebuild" >&2
+    SIGN_ARGS=(--sign -)
+fi
+
+# Same identifier as the app so the app's Screen Recording grant covers the helper.
+codesign --force "${SIGN_ARGS[@]}" --identifier dev.phonedisplay.app "$APP/Contents/Helpers/vdhelper" >/dev/null
+codesign --force "${SIGN_ARGS[@]}" --identifier dev.phonedisplay.app "$APP" >/dev/null
+codesign --verify --deep --strict "$APP"
 
 echo "✓ built: $APP"
 echo "  run:   open \"$APP\""

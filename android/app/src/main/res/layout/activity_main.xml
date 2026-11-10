@@ -1,7 +1,8 @@
 <?xml version="1.0" encoding="utf-8"?>
 <FrameLayout xmlns:android="http://schemas.android.com/apk/res/android"
     android:layout_width="match_parent"
-    android:layout_height="match_parent">
+    android:layout_height="match_parent"
+    android:background="@color/pd_black">
 
     <SurfaceView
         android:id="@+id/surface"
@@ -13,66 +14,136 @@
         android:layout_width="match_parent"
         android:layout_height="match_parent" />
 
-    <LinearLayout
+    <ScrollView
         android:id="@+id/overlay"
         android:layout_width="match_parent"
         android:layout_height="match_parent"
-        android:background="#DD000000"
-        android:gravity="center"
-        android:orientation="vertical"
-        android:padding="24dp">
+        android:background="#E6000000"
+        android:fillViewport="true"
+        android:scrollbars="none">
 
-        <TextView
-            android:layout_width="wrap_content"
+        <LinearLayout
+            android:layout_width="match_parent"
             android:layout_height="wrap_content"
-            android:text="@string/app_name"
-            android:textColor="#FFFFFF"
-            android:textSize="28sp"
-            android:textStyle="bold" />
-
-        <TextView
-            android:layout_width="360dp"
-            android:layout_height="wrap_content"
-            android:layout_marginTop="12dp"
             android:gravity="center"
-            android:text="@string/scan_hint"
-            android:textColor="#CCCCCC"
-            android:textSize="15sp" />
+            android:orientation="vertical"
+            android:padding="20dp">
 
-        <TextView
-            android:id="@+id/mac"
-            android:layout_width="wrap_content"
-            android:layout_height="wrap_content"
-            android:layout_marginTop="12dp"
-            android:textColor="#AAAAAA"
-            android:textSize="14sp"
-            android:visibility="gone" />
+            <LinearLayout
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:background="@drawable/connect_card"
+                android:gravity="center_horizontal"
+                android:orientation="vertical"
+                android:padding="22dp">
 
-        <Button
-            android:id="@+id/scan"
-            android:layout_width="wrap_content"
-            android:layout_height="wrap_content"
-            android:layout_marginTop="16dp"
-            android:text="@string/scan_qr" />
+                <TextView
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:text="@string/app_name"
+                    android:textColor="@color/pd_text"
+                    android:textSize="28sp"
+                    android:textStyle="bold" />
 
-        <Button
-            android:id="@+id/forget"
-            android:layout_width="wrap_content"
-            android:layout_height="wrap_content"
-            android:layout_marginTop="4dp"
-            android:text="@string/forget"
-            android:visibility="gone" />
+                <LinearLayout
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:layout_marginTop="4dp"
+                    android:gravity="center_vertical"
+                    android:orientation="horizontal">
 
-        <TextView
-            android:id="@+id/status"
-            android:layout_width="360dp"
-            android:layout_height="wrap_content"
-            android:layout_marginTop="12dp"
-            android:gravity="center"
-            android:text="@string/ready"
-            android:textColor="#AAAAAA"
-            android:textSize="14sp" />
-    </LinearLayout>
+                    <TextView
+                        android:layout_width="wrap_content"
+                        android:layout_height="wrap_content"
+                        android:text="@string/connect_subtitle"
+                        android:textColor="@color/pd_text_secondary"
+                        android:textSize="14sp" />
+
+                    <TextView
+                        android:layout_width="wrap_content"
+                        android:layout_height="wrap_content"
+                        android:layout_marginStart="8dp"
+                        android:background="@drawable/usb_badge_bg"
+                        android:letterSpacing="0.14"
+                        android:paddingStart="10dp"
+                        android:paddingTop="3dp"
+                        android:paddingEnd="10dp"
+                        android:paddingBottom="3dp"
+                        android:text="@string/usb_badge"
+                        android:textColor="@color/pd_accent"
+                        android:textSize="10sp"
+                        android:textStyle="bold" />
+                </LinearLayout>
+
+                <TextView
+                    android:layout_width="380dp"
+                    android:layout_height="wrap_content"
+                    android:layout_marginTop="12dp"
+                    android:gravity="center"
+                    android:lineSpacingExtra="2dp"
+                    android:text="@string/connect_hint"
+                    android:textColor="@color/pd_text_secondary"
+                    android:textSize="15sp" />
+
+                <TextView
+                    android:id="@+id/mac"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:layout_marginTop="6dp"
+                    android:textColor="@color/pd_text_tertiary"
+                    android:textSize="14sp"
+                    android:visibility="gone" />
+
+                <ProgressBar
+                    android:id="@+id/progress"
+                    style="?android:attr/progressBarStyleSmall"
+                    android:layout_width="22dp"
+                    android:layout_height="22dp"
+                    android:layout_marginTop="8dp"
+                    android:indeterminateTint="@color/pd_accent"
+                    android:visibility="gone" />
+
+                <Button
+                    android:id="@+id/connect"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:layout_marginTop="10dp"
+                    android:backgroundTint="@color/pd_accent"
+                    android:minWidth="190dp"
+                    android:minHeight="48dp"
+                    android:paddingStart="24dp"
+                    android:paddingEnd="24dp"
+                    android:stateListAnimator="@null"
+                    android:text="@string/connect"
+                    android:textAllCaps="false"
+                    android:textColor="@color/pd_text"
+                    android:textSize="16sp"
+                    android:textStyle="bold" />
+
+                <Button
+                    android:id="@+id/forget"
+                    style="?android:attr/borderlessButtonStyle"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:text="@string/forget"
+                    android:textAllCaps="false"
+                    android:textColor="@color/pd_text_tertiary"
+                    android:textSize="14sp"
+                    android:visibility="gone" />
+
+                <TextView
+                    android:id="@+id/status"
+                    android:layout_width="380dp"
+                    android:layout_height="wrap_content"
+                    android:layout_marginTop="6dp"
+                    android:gravity="center"
+                    android:lineSpacingExtra="2dp"
+                    android:text="@string/ready"
+                    android:textColor="@color/pd_text_tertiary"
+                    android:textSize="14sp" />
+            </LinearLayout>
+        </LinearLayout>
+    </ScrollView>
 
     <View
         android:id="@+id/fpsHotspot"
@@ -88,18 +159,19 @@
         android:layout_height="wrap_content"
         android:layout_gravity="top|start"
         android:layout_margin="12dp"
-        android:background="#66000000"
+        android:background="@drawable/fps_pill_bg"
         android:orientation="horizontal"
-        android:padding="3dp">
+        android:padding="4dp">
 
         <TextView
             android:id="@+id/fps60"
             android:layout_width="60dp"
             android:layout_height="38dp"
+            android:background="@drawable/fps_selected_bg"
             android:clickable="true"
             android:gravity="center"
             android:text="@string/fps60"
-            android:textColor="#FFFFFF"
+            android:textColor="@color/pd_text"
             android:textSize="16sp"
             android:textStyle="bold" />
 
@@ -107,11 +179,12 @@
             android:id="@+id/fps90"
             android:layout_width="60dp"
             android:layout_height="38dp"
-            android:layout_marginStart="3dp"
+            android:layout_marginStart="4dp"
+            android:background="@drawable/fps_unselected_bg"
             android:clickable="true"
             android:gravity="center"
             android:text="@string/fps90"
-            android:textColor="#FFFFFF"
+            android:textColor="@color/pd_text_secondary"
             android:textSize="16sp"
             android:textStyle="bold" />
     </LinearLayout>

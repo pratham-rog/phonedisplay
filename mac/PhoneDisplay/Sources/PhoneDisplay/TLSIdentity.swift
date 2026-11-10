@@ -59,8 +59,19 @@ final class TLSIdentity {
 
     private static func importPKCS12(_ data: Data) throws -> TLSIdentity {
         var items: CFArray?
-        let options = [kSecImportExportPassphrase as String: passphrase] as CFDictionary
-        let status = SecPKCS12Import(data as CFData, options, &items)
+        var options: [String: Any] = [
+            kSecImportExportPassphrase as String: passphrase,
+        ]
+        if #available(macOS 15.0, *) {
+            // Keep the identity in memory. Importing it into the login keychain
+            // makes macOS prompt for the login password when TLS uses the key.
+            options[kSecImportToMemoryOnly as String] = true
+        } else {
+            // macOS 14 has no memory-only import. Give the imported key an ACL
+            // that trusts this app, so TLS does not prompt for the login keychain.
+            options[kSecImportExportAccess as String] = try importAccess()
+        }
+        let status = SecPKCS12Import(data as CFData, options as CFDictionary, &items)
         guard status == errSecSuccess else {
             throw TLSIdentityError.importFailed(status)
         }
@@ -83,6 +94,25 @@ final class TLSIdentity {
             certificate: certificate,
             fingerprint: sha256Hex(der)
         )
+    }
+
+    /// macOS 14 fallback: import the key with an ACL that trusts this app.
+    private static func importAccess() throws -> SecAccess {
+        var app: SecTrustedApplication?
+        let appStatus = SecTrustedApplicationCreateFromPath(nil, &app)
+        guard appStatus == errSecSuccess, let app else {
+            throw TLSIdentityError.importFailed(appStatus)
+        }
+        var access: SecAccess?
+        let status = SecAccessCreate(
+            "PhoneDisplay TLS" as CFString,
+            [app] as CFArray,
+            &access
+        )
+        guard status == errSecSuccess, let access else {
+            throw TLSIdentityError.importFailed(status)
+        }
+        return access
     }
 
     private static func generate(at url: URL) throws -> TLSIdentity {

@@ -1,12 +1,19 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
     <string name="app_name">PhoneDisplay</string>
-    <string name="ready">ready</string>
-    <string name="no_surface">waiting for display surface…</string>
-    <string name="stream_ended">stream ended, reconnecting…</string>
-    <string name="scan_hint">On the Mac, open PhoneDisplay, press Start PhoneDisplay, then scan the pairing QR shown there.</string>
-    <string name="scan_prompt">Scan the pairing QR on your Mac.</string>
-    <string name="scan_qr">Scan pairing QR</string>
+    <string name="connect_subtitle">USB display for your Mac</string>
+    <string name="usb_badge">USB</string>
+    <string name="ready">Ready</string>
+    <string name="no_surface">Waiting for display surface…</string>
+    <string name="stream_ended">Stream ended, reconnecting…</string>
+    <string name="connect_hint">Connect this phone to the Mac with USB. PhoneDisplay pairs automatically when the Mac starts. Use Connect to reconnect later.</string>
+    <string name="connect_prompt">Connect the USB cable, then tap Connect.</string>
+    <string name="connect_waiting">Waiting for the Mac… Keep USB connected and press Send pairing again on the Mac if needed.</string>
+    <string name="connecting">Connecting to %1$s…</string>
+    <string name="pairing">Pairing with %1$s…</string>
+    <string name="pairing_failed">Pairing failed: %1$s</string>
+    <string name="reconnecting">Reconnecting…</string>
+    <string name="connect">Connect</string>
     <string name="forget">Forget this Mac</string>
     <string name="paired_with">Mac: %1$s</string>
     <string name="fps60">60</string>

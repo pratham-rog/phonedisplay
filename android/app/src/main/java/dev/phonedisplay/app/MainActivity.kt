@@ -1,12 +1,10 @@
 package dev.phonedisplay.app
 
-import android.Manifest
 import android.app.Activity
 import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
 import android.content.IntentFilter
-import android.content.pm.PackageManager
 import android.media.MediaCodec
 import android.media.MediaFormat
 import android.os.Build
@@ -14,7 +12,9 @@ import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
 import android.os.SystemClock
+import android.util.Base64
 import android.util.Log
+import android.view.Gravity
 import android.view.InputDevice
 import android.view.MotionEvent
 import android.view.Surface
@@ -23,9 +23,10 @@ import android.view.SurfaceView
 import android.view.View
 import android.view.WindowManager
 import android.widget.Button
+import android.widget.FrameLayout
 import android.widget.LinearLayout
 import android.widget.TextView
-import com.google.zxing.integration.android.IntentIntegrator
+import kotlin.math.roundToInt
 import org.json.JSONArray
 import org.json.JSONObject
 import java.io.BufferedInputStream
@@ -66,15 +67,15 @@ class MainActivity : Activity(), SurfaceHolder.Callback {
         private const val MID_PACKET_STALL_MS = 10_000
         private const val MAX_FRAME_BYTES = 8 shl 20
         private const val PEN_FALLBACK_IDLE_MS = 20_000L
-        private const val REQUEST_SCAN = 1001
-        private const val REQUEST_CAMERA = 1002
+        private const val EXTRA_PAIRING_B64 = "pd_pairing_b64"
     }
 
     private lateinit var surfaceView: SurfaceView
     private lateinit var cursorView: CursorView
     private lateinit var overlay: View
     private lateinit var statusView: TextView
-    private lateinit var scanButton: Button
+    private lateinit var progress: View
+    private lateinit var connectButton: Button
     private lateinit var forgetButton: Button
     private lateinit var macView: TextView
     private lateinit var fpsPill: LinearLayout
@@ -241,12 +242,17 @@ class MainActivity : Activity(), SurfaceHolder.Callback {
             return true
         }
 
-        val sx = if (streamW > 0 && cursorView.width > 0)
-            streamW.toFloat() / cursorView.width else 1f
-        val sy = if (streamH > 0 && cursorView.height > 0)
-            streamH.toFloat() / cursorView.height else 1f
-        val x = (ev.x * sx).toInt()
-        val y = (ev.y * sy).toInt()
+        // The video is scaled to fill the screen and center-cropped. Map the
+        // pen through the same scale/offset so it lands under the tip.
+        val s = VideoGeometry.scale(
+            streamW, streamH, cursorView.width, cursorView.height,
+        )
+        val x = if (streamW > 0)
+            VideoGeometry.toStreamX(ev.rawX, streamW, cursorView.width, s)
+                .toInt().coerceIn(0, streamW - 1) else 0
+        val y = if (streamH > 0)
+            VideoGeometry.toStreamY(ev.rawY, streamH, cursorView.height, s)
+                .toInt().coerceIn(0, streamH - 1) else 0
         val btn = (ev.buttonState and
                 (MotionEvent.BUTTON_STYLUS_PRIMARY or MotionEvent.BUTTON_STYLUS_SECONDARY)) != 0
 
@@ -381,8 +387,16 @@ class MainActivity : Activity(), SurfaceHolder.Callback {
     }
 
     private fun updateFpsUi() {
-        fps60View.setBackgroundColor(if (chosenFps == 60) 0xCC2E7DD1.toInt() else 0x00000000)
-        fps90View.setBackgroundColor(if (chosenFps == 90) 0xCC2E7DD1.toInt() else 0x00000000)
+        val selected = if (chosenFps == 60) R.drawable.fps_selected_bg else R.drawable.fps_unselected_bg
+        val unselected = if (chosenFps == 60) R.drawable.fps_unselected_bg else R.drawable.fps_selected_bg
+        fps60View.setBackgroundResource(selected)
+        fps90View.setBackgroundResource(unselected)
+        fps60View.setTextColor(
+            if (chosenFps == 60) getColor(R.color.pd_text) else getColor(R.color.pd_text_secondary)
+        )
+        fps90View.setTextColor(
+            if (chosenFps == 90) getColor(R.color.pd_text) else getColor(R.color.pd_text_secondary)
+        )
     }
 
     /**
@@ -460,7 +474,8 @@ class MainActivity : Activity(), SurfaceHolder.Callback {
         cursorView = findViewById(R.id.cursor)
         overlay = findViewById(R.id.overlay)
         statusView = findViewById(R.id.status)
-        scanButton = findViewById(R.id.scan)
+        progress = findViewById(R.id.progress)
+        connectButton = findViewById(R.id.connect)
         forgetButton = findViewById(R.id.forget)
         macView = findViewById(R.id.mac)
         fpsPill = findViewById(R.id.fpsPill)
@@ -482,9 +497,10 @@ class MainActivity : Activity(), SurfaceHolder.Callback {
         fpsHotspot.setOnClickListener { revealPill(autoHide = true) }
         revealPill(autoHide = false)     // visible on the connect screen
 
-        scanButton.setOnClickListener { scanPairing() }
+        connectButton.setOnClickListener { connect() }
         forgetButton.setOnClickListener { forgetMac() }
         updateSavedUi()
+        handlePairingIntent(intent)
 
         surfaceView.holder.addCallback(this)
 
@@ -495,8 +511,15 @@ class MainActivity : Activity(), SurfaceHolder.Callback {
 
         if (savedDevice == null) {
             overlay.visibility = View.VISIBLE
-            setStatus(getString(R.string.scan_prompt))
+            progress.visibility = View.GONE
+            setStatus(getString(R.string.connect_prompt))
         }
+    }
+
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        setIntent(intent)
+        handlePairingIntent(intent)
     }
 
     override fun onDestroy() {
@@ -511,11 +534,15 @@ class MainActivity : Activity(), SurfaceHolder.Callback {
 
     override fun surfaceCreated(holder: SurfaceHolder) {
         surface = holder.surface
-        setStatus(getString(R.string.ready))
         // Auto-connect on launch / when the surface comes back, so returning
         // to the app never leaves it stuck on a stale screen.
         val device = savedDevice
-        if (!running && device != null) startStreaming(device)
+        if (device == null) {
+            progress.visibility = View.GONE
+            setStatus(getString(R.string.connect_prompt))
+        } else if (!running) {
+            startStreaming(device)
+        }
     }
 
     override fun surfaceChanged(holder: SurfaceHolder, format: Int, width: Int, height: Int) {}
@@ -545,55 +572,50 @@ class MainActivity : Activity(), SurfaceHolder.Callback {
         }
     }
 
-    private fun scanPairing() {
-        if (Build.VERSION.SDK_INT >= 23 &&
-            checkSelfPermission(Manifest.permission.CAMERA) != PackageManager.PERMISSION_GRANTED
-        ) {
-            requestPermissions(arrayOf(Manifest.permission.CAMERA), REQUEST_CAMERA)
+    private fun connect() {
+        val device = savedDevice
+        if (device != null) {
+            startStreaming(device)
             return
         }
-        launchScanner()
+        overlay.visibility = View.VISIBLE
+        progress.visibility = View.VISIBLE
+        connectButton.isEnabled = true
+        setStatus(getString(R.string.connect_waiting))
+        revealPill(autoHide = false)
     }
 
-    private fun launchScanner() {
-        IntentIntegrator(this)
-            .setDesiredBarcodeFormats(IntentIntegrator.QR_CODE)
-            .setPrompt("Scan the pairing QR on your Mac")
-            .setBeepEnabled(false)
-            .setOrientationLocked(false)
-            .initiateScan()
-    }
-
-    override fun onRequestPermissionsResult(
-        requestCode: Int,
-        permissions: Array<out String>,
-        grantResults: IntArray,
-    ) {
-        super.onRequestPermissionsResult(requestCode, permissions, grantResults)
-        if (requestCode == REQUEST_CAMERA) {
-            if (grantResults.firstOrNull() == PackageManager.PERMISSION_GRANTED) {
-                launchScanner()
-            } else {
-                setStatus("Camera permission is needed to scan the QR.")
+    /**
+     * The Mac sends the one-time pairing payload over the authorized ADB/USB
+     * link (explicit intent, base64 to keep shell metacharacters out of adb).
+     * No camera or QR code is involved.
+     */
+    private fun handlePairingIntent(intent: Intent?) {
+        val encoded = intent?.getStringExtra(EXTRA_PAIRING_B64) ?: return
+        val raw = try {
+            String(Base64.decode(encoded, Base64.NO_WRAP), Charsets.UTF_8)
+        } catch (_: Exception) {
+            return
+        }
+        val info = PairingParser.parse(raw) ?: run {
+            setStatus("The Mac sent an invalid pairing payload.")
+            return
+        }
+        val saved = savedDevice
+        if (saved != null && saved.hostID == info.hostID) {
+            // Already paired with this Mac: use the existing device secret.
+            // The new payload only refreshes the USB address/port/certificate.
+            val updated = saved.copy(
+                host = info.host,
+                port = info.port,
+                fingerprint = info.fingerprint,
+            )
+            if (updated != saved) {
+                store.save(updated)
+                savedDevice = updated
+                updateSavedUi()
             }
-        }
-    }
-
-    @Deprecated("Deprecated in Java")
-    override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
-        val result = IntentIntegrator.parseActivityResult(requestCode, resultCode, data)
-        if (result == null) {
-            super.onActivityResult(requestCode, resultCode, data)
-            return
-        }
-        val contents = result.contents
-        if (contents.isNullOrBlank()) {
-            setStatus("Scan cancelled.")
-            return
-        }
-        val info = PairingParser.parse(contents)
-        if (info == null) {
-            setStatus("That QR is not a PhoneDisplay pairing code.")
+            startStreaming(updated)
             return
         }
         startPairing(info)
@@ -601,22 +623,39 @@ class MainActivity : Activity(), SurfaceHolder.Callback {
 
     private fun startPairing(info: PairingInfo) {
         invalidateSession()
-        scanButton.isEnabled = false
+        pairingWorker?.interrupt()
+        connectButton.isEnabled = false
         overlay.visibility = View.VISIBLE
-        setStatus("Pairing with ${info.name} …")
+        progress.visibility = View.VISIBLE
+        setStatus(getString(R.string.pairing, info.name))
+        revealPill(autoHide = false)
         pairingWorker = Thread({ pairWith(info) }, "pd-pair").also { it.start() }
     }
 
     private fun pairWith(info: PairingInfo) {
         try {
-            connectPinned(
-                info.host,
-                info.port,
-                info.fingerprint,
-            ).use { sock ->
-                val input = BufferedInputStream(sock.getInputStream(), 1 shl 16)
-                val out = sock.getOutputStream()
-                sock.soTimeout = GREETING_TIMEOUT_MS
+            // The first TLS handshake right after the Mac listener starts can
+            // occasionally stall; a couple of quick retries make the first
+            // Connect tap reliable.
+            var pending: SSLSocket? = null
+            var lastError: Exception? = null
+            for (attempt in 1..3) {
+                try {
+                    pending = connectPinned(info.host, info.port, info.fingerprint)
+                    break
+                } catch (e: Exception) {
+                    lastError = e
+                    Log.i(TAG, "pairing connect attempt $attempt failed: ${e.message}")
+                    if (attempt < 3) {
+                        try { Thread.sleep(600) } catch (_: InterruptedException) { break }
+                    }
+                }
+            }
+            val connected = pending ?: throw lastError ?: IOException("no connection")
+            connected.use { socket ->
+                val input = BufferedInputStream(socket.getInputStream(), 1 shl 16)
+                val out = socket.getOutputStream()
+                socket.soTimeout = GREETING_TIMEOUT_MS
                 val request = JSONObject()
                     .put("type", "pair")
                     .put("v", 1)
@@ -649,16 +688,18 @@ class MainActivity : Activity(), SurfaceHolder.Callback {
                 runOnUiThread {
                     savedDevice = device
                     updateSavedUi()
-                    scanButton.isEnabled = true
+                    progress.visibility = View.GONE
+                    connectButton.isEnabled = true
                     startStreaming(device)
                 }
             }
         } catch (e: Exception) {
             Log.w(TAG, "pairing failed", e)
             runOnUiThread {
-                scanButton.isEnabled = true
+                connectButton.isEnabled = true
                 overlay.visibility = View.VISIBLE
-                setStatus("Pairing failed: ${e.message ?: "unknown error"}")
+                progress.visibility = View.GONE
+                setStatus(getString(R.string.pairing_failed, e.message ?: "unknown error"))
             }
         }
     }
@@ -669,8 +710,9 @@ class MainActivity : Activity(), SurfaceHolder.Callback {
         savedDevice = null
         updateSavedUi()
         overlay.visibility = View.VISIBLE
-        scanButton.isEnabled = true
-        setStatus(getString(R.string.scan_prompt))
+        progress.visibility = View.GONE
+        connectButton.isEnabled = true
+        setStatus(getString(R.string.connect_prompt))
         revealPill(autoHide = false)
     }
 
@@ -700,14 +742,31 @@ class MainActivity : Activity(), SurfaceHolder.Callback {
         return id
     }
 
+    /** Scale the video uniformly to fill the phone, cropping the overflow. */
+    private fun applyVideoGeometry(videoW: Int, videoH: Int) {
+        if (videoW <= 0 || videoH <= 0) return
+        val root = surfaceView.parent as? View ?: return
+        val viewW = root.width.takeIf { it > 0 } ?: resources.displayMetrics.widthPixels
+        val viewH = root.height.takeIf { it > 0 } ?: resources.displayMetrics.heightPixels
+        val scale = VideoGeometry.scale(videoW, videoH, viewW, viewH)
+        val w = (videoW * scale).roundToInt()
+        val h = (videoH * scale).roundToInt()
+        surfaceView.layoutParams = FrameLayout.LayoutParams(w, h, Gravity.CENTER)
+        surfaceView.requestLayout()
+        cursorView.setVideoSize(videoW, videoH)
+    }
+
     private fun startStreaming(device: SavedDevice) {
         val id = invalidateSession()
         if (surface == null) {
-            scanButton.isEnabled = true
+            progress.visibility = View.GONE
+            connectButton.isEnabled = true
             setStatus(getString(R.string.no_surface))
             return
         }
-        scanButton.isEnabled = false
+        progress.visibility = View.VISIBLE
+        connectButton.isEnabled = false
+        setStatus(getString(R.string.connecting, device.name))
         running = true
         worker = Thread({ streamLoop(device, id) }, "pd-stream").also { it.start() }
     }
@@ -727,7 +786,8 @@ class MainActivity : Activity(), SurfaceHolder.Callback {
                     savedDevice = null
                     updateSavedUi()
                     overlay.visibility = View.VISIBLE
-                    scanButton.isEnabled = true
+                    progress.visibility = View.GONE
+                    connectButton.isEnabled = true
                     setStatus(e.message ?: "Pair this phone again.")
                     revealPill(autoHide = false)
                 }
@@ -740,7 +800,8 @@ class MainActivity : Activity(), SurfaceHolder.Callback {
             runOnUiThread {
                 if (id != sessionId) return@runOnUiThread
                 overlay.visibility = View.VISIBLE
-                scanButton.isEnabled = true
+                progress.visibility = View.VISIBLE
+                connectButton.isEnabled = true
                 revealPill(autoHide = false)     // connect screen: pill available
             }
             if (id == sessionId) {
@@ -811,8 +872,11 @@ class MainActivity : Activity(), SurfaceHolder.Callback {
             streamW = width
             streamH = height
             Log.i(TAG, "stream $width x $height @ $fps")
+            runOnUiThread {
+                applyVideoGeometry(width, height)
+                progress.visibility = View.GONE
+            }
             setStatus("streaming ${width}x$height @ $fps")
-            cursorView.setVideoSize(width, height)
             sockOut = out              // only after the Mac accepted the device secret
             if (!fpsExplicit) {
                 // Follow the Mac's profile until the user picks 60 or 90.

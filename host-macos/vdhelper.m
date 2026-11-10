@@ -172,6 +172,8 @@ static CFTimeInterval doubleClickInterval(void)
     VTCompressionSessionRef _vt;
     dispatch_queue_t _queue;
     pthread_mutex_t _outLock;
+    pthread_mutex_t _cacheLock;
+    NSData *_lastKeyframe;       // replayed when a new client joins a static screen
     int _outFd;
     uint32_t _fps;
     uint64_t _fedFrames;        // frames SCK handed us
@@ -209,6 +211,7 @@ static CFTimeInterval doubleClickInterval(void)
     if ((self = [super init])) {
         _queue = dispatch_queue_create("pd.stream", DISPATCH_QUEUE_SERIAL);
         pthread_mutex_init(&_outLock, NULL);
+        pthread_mutex_init(&_cacheLock, NULL);
         _outFd = 1;  // stdout
         _firstFrame = YES;
         _softwareCursor = YES;   // phone draws its own scalable pointer
@@ -292,6 +295,13 @@ static void vtOutputCallback(void *refcon, void *sourceRefCon,
         (uint8_t)((len32 >> 8) & 0xFF), (uint8_t)(len32 & 0xFF),
         (uint8_t)(keyframe ? 0x01 : 0x00)
     };
+
+    if (keyframe) {
+        NSData *copy = [au copy];
+        pthread_mutex_lock(&_cacheLock);
+        _lastKeyframe = copy;
+        pthread_mutex_unlock(&_cacheLock);
+    }
 
     pthread_mutex_lock(&_outLock);
     BOOL ok = writeAll(_outFd, hdr, 5) && writeAll(_outFd, au.bytes, au.length);
@@ -418,9 +428,37 @@ static void vtOutputCallback(void *refcon, void *sourceRefCon,
         // captured frame so its live delta chain starts from a clean state,
         // even if a frame or two went by while its GOP was being sent.
         atomic_store(&_forceKeyframe, true);
+        // SCK is change-driven. If the Mac screen is static, there is no
+        // "next frame"; replay the last keyframe so a reconnect is not black.
+        [self replayLastKeyframe];
         return;
     }
     [self injectInputLine:line];
+}
+
+- (void)replayLastKeyframe
+{
+    NSData *frame = nil;
+    pthread_mutex_lock(&_cacheLock);
+    frame = _lastKeyframe;
+    pthread_mutex_unlock(&_cacheLock);
+    if (frame.length == 0) return;
+
+    uint32_t len32 = (uint32_t)frame.length;
+    uint8_t hdr[5] = {
+        (uint8_t)(len32 >> 24), (uint8_t)((len32 >> 16) & 0xFF),
+        (uint8_t)((len32 >> 8) & 0xFF), (uint8_t)(len32 & 0xFF),
+        0x01
+    };
+    pthread_mutex_lock(&_outLock);
+    BOOL ok = writeAll(_outFd, hdr, 5) &&
+              writeAll(_outFd, frame.bytes, frame.length);
+    pthread_mutex_unlock(&_outLock);
+    if (!ok) {
+        [self releaseHeldButton];
+        fprintf(stderr, "stdout write failed — consumer gone, exiting\n");
+        exit(0);
+    }
 }
 
 - (void)setCaptureFpsLine:(const char *)line

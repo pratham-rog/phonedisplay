@@ -1,7 +1,7 @@
 import CryptoKit
 import Foundation
 
-public struct PairingPayload: Equatable {
+public struct PairingPayload: Equatable, Sendable {
     public let host: String
     public let port: UInt16
     public let fingerprint: String

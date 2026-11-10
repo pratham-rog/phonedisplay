@@ -144,7 +144,7 @@ final class ClientSession {
         guard let token = message["token"] as? String,
               pairing.validatePairingToken(token)
         else {
-            sendError("pairing", "Pairing expired — show a new QR on the Mac.")
+            sendError("pairing", "Pairing expired — press Send pairing again on the Mac.")
             return
         }
         let deviceInfo = message["device"] as? [String: Any]

@@ -85,7 +85,15 @@ class CursorView @JvmOverloads constructor(
     fun setVideoSize(w: Int, h: Int) {
         videoW = w
         videoH = h
+        postInvalidateOnAnimation()      // geometry changed; full redraw
     }
+
+    /** Uniform fill scale: the stream covers the view and overflows. */
+    private fun videoScale(): Float = VideoGeometry.scale(videoW, videoH, width, height)
+
+    private fun videoOffsetX(scale: Float): Float = VideoGeometry.offsetX(videoW, width, scale)
+
+    private fun videoOffsetY(scale: Float): Float = VideoGeometry.offsetY(videoH, height, scale)
 
     /** Called from the network thread; cheap and invalidation-throttled. */
     fun updateFromStream(visible: Boolean, x: Float, y: Float) {
@@ -106,12 +114,11 @@ class CursorView @JvmOverloads constructor(
 
     /** Pixel rect the cursor currently occupies (with margin), for partial redraws. */
     private fun dirtyRect(): IntArray {
-        val sx = if (videoW > 0) width.toFloat() / videoW else 1f
-        val sy = if (videoH > 0) height.toFloat() / videoH else 1f
-        val k = min(sx, sy) * cursorScale
+        val scale = videoScale()
+        val k = scale * cursorScale
         val margin = max(4f, 3f * k)    // stroke + antialiasing
-        val left = cx * sx - margin
-        val top = cy * sy - margin
+        val left = cx * scale + videoOffsetX(scale) - margin
+        val top = cy * scale + videoOffsetY(scale) - margin
         return intArrayOf(
             left.toInt(),
             top.toInt(),
@@ -135,11 +142,13 @@ class CursorView @JvmOverloads constructor(
             Log.i("PhoneDisplay", "cursor first draw at ($cx,$cy)  view=${width}x$height  " +
                     "video=${videoW}x$videoH  scale=$cursorScale")
         }
-        val sx = if (videoW > 0) width.toFloat() / videoW else 1f
-        val sy = if (videoH > 0) height.toFloat() / videoH else 1f
-        val k = min(sx, sy) * cursorScale
+        val scale = videoScale()
+        val k = scale * cursorScale
         canvas.save()
-        canvas.translate(cx * sx, cy * sy)
+        canvas.translate(
+            cx * scale + videoOffsetX(scale),
+            cy * scale + videoOffsetY(scale),
+        )
         canvas.scale(k, k)
         canvas.drawPath(arrow, fillPaint)
         canvas.drawPath(arrow, strokePaint)

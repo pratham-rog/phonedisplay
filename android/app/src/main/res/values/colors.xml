@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <color name="pd_black">#000000</color>
+    <color name="pd_card">#F2141414</color>
+    <color name="pd_card_stroke">#33FFFFFF</color>
+    <color name="pd_accent">#4F8DF7</color>
+    <color name="pd_accent_soft">#1F4F8DF7</color>
+    <color name="pd_text">#FFFFFF</color>
+    <color name="pd_text_secondary">#B8B8B8</color>
+    <color name="pd_text_tertiary">#8A8A8A</color>
+</resources>

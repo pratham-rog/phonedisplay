@@ -23,6 +23,7 @@ final class HostServer: ClientSessionDelegate {
     var onStats: ((Int, Int) -> Void)?
     var onLog: ((String) -> Void)?
     var onPaired: ((KnownDevice) -> Void)?
+    var onAuthenticated: ((KnownDevice) -> Void)?
 
     private let pairing: PairingService
     private let synthetic: Bool
@@ -176,6 +177,7 @@ final class HostServer: ClientSessionDelegate {
             self.idleWork?.cancel()
             self.idleWork = nil
             self.onClientCount?(1)
+            self.onAuthenticated?(device)
             self.onState?("\(device.name) connected")
             Diagnostics.log("authenticated device id=\(device.id)")
             if self.helper != nil {

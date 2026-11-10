@@ -21,7 +21,7 @@ struct ContentView: View {
                     .controlSize(.large)
 
                     Text(model.status)
-                        .foregroundStyle(.secondary)
+                        .foregroundStyle(model.clientCount > 0 ? .green : .secondary)
                 }
 
                 VStack(alignment: .leading, spacing: 6) {
@@ -46,14 +46,7 @@ struct ContentView: View {
                     pairing
                 }
 
-                if !model.lastLog.isEmpty {
-                    Text(model.lastLog)
-                        .font(.caption.monospaced())
-                        .foregroundStyle(.tertiary)
-                        .lineLimit(2)
-                }
-
-                Text("Secure TLS pairing. The QR expires after two minutes and pairs one phone.")
+                Text("Secure TLS pairing over USB. The one-time pairing secret expires after two minutes and pairs one phone.")
                     .font(.caption)
                     .foregroundStyle(.tertiary)
             }
@@ -94,9 +87,11 @@ struct ContentView: View {
                 Text("Permissions")
                     .font(.headline)
                 Spacer()
-                Button("Restart app") { model.restart() }
-                    .buttonStyle(.link)
-                    .controlSize(.small)
+                if !model.screenRecording || !model.accessibility {
+                    Button("Restart app") { model.restart() }
+                        .buttonStyle(.link)
+                        .controlSize(.small)
+                }
             }
 
             PermissionRow(
@@ -114,15 +109,9 @@ struct ContentView: View {
                 openSettings: model.openAccessibilitySettings
             )
 
-            HStack {
-                Text("Local Network is only needed if macOS asks while starting.")
-                    .font(.caption)
-                    .foregroundStyle(.tertiary)
-                Spacer()
-                Button("Open") { model.openLocalNetworkSettings() }
-                    .buttonStyle(.link)
-                    .controlSize(.small)
-            }
+            Text("Wi-Fi is optional. USB uses ADB and does not need Local Network access.")
+                .font(.caption)
+                .foregroundStyle(.tertiary)
         }
     }
 
@@ -130,63 +119,70 @@ struct ContentView: View {
         VStack(alignment: .leading, spacing: 12) {
             Divider()
 
-            if let device = model.pairedDeviceName {
-                HStack(spacing: 8) {
-                    Image(systemName: model.clientCount > 0 ? "checkmark.circle.fill" : "iphone")
-                        .foregroundStyle(model.clientCount > 0 ? .green : .secondary)
-                    Text(device)
-                        .font(.headline)
-                    Spacer()
-                    Text(model.clientCount > 0 ? "Connected" : "Waiting for phone")
-                        .foregroundStyle(.secondary)
-                }
-                if model.clientCount == 0 {
-                    Button("Show a new pairing QR") { model.beginPairing() }
-                        .controlSize(.small)
-                }
-            } else if let qr = model.qrImage, let payload = model.pairingPayload {
-                Text("Pair your phone")
+            HStack(spacing: 8) {
+                Label("USB connection", systemImage: "cable.connector")
                     .font(.headline)
-                HStack(alignment: .top, spacing: 18) {
-                    Image(nsImage: qr)
-                        .interpolation(.none)
-                        .resizable()
-                        .frame(width: 190, height: 190)
-                        .padding(8)
-                        .background(.white, in: RoundedRectangle(cornerRadius: 10))
+                Spacer()
+                Text(model.clientCount > 0 ? "Connected" : "Waiting")
+                    .font(.caption.weight(.medium))
+                    .foregroundStyle(model.clientCount > 0 ? .green : .secondary)
+            }
 
-                    VStack(alignment: .leading, spacing: 10) {
-                        Text("Open PhoneDisplay on Android and scan this code.")
-                            .fixedSize(horizontal: false, vertical: true)
-                        Text("Mac: \(payload.host):\(payload.port)")
-                            .font(.system(.caption, design: .monospaced))
-                            .textSelection(.enabled)
-                        if let expiry = model.pairingExpiry {
-                            Text("Expires \(expiry, style: .relative)")
-                                .font(.caption)
-                                .foregroundStyle(.secondary)
-                        }
-                        Text("This QR carries a one-time bootstrap secret; the long-lived device secret is issued after pairing.")
+            if let device = model.pairedDeviceName {
+                HStack(spacing: 10) {
+                    Image(systemName: model.clientCount > 0 ? "checkmark.circle.fill" : "iphone")
+                        .font(.title3)
+                        .foregroundStyle(model.clientCount > 0 ? .green : .secondary)
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(device)
+                            .font(.headline)
+                        Text("USB via ADB")
                             .font(.caption)
-                            .foregroundStyle(.tertiary)
-                            .fixedSize(horizontal: false, vertical: true)
+                            .foregroundStyle(.secondary)
                     }
                     Spacer()
                 }
-                Button("Show a new QR") { model.beginPairing() }
+                if model.clientCount == 0 {
+                    Button("Send pairing again") { model.beginPairing() }
+                        .controlSize(.small)
+                }
+            } else if let payload = model.pairingPayload {
+                Text("Pair over USB")
+                    .font(.headline)
+                Text("Keep the phone connected by USB. PhoneDisplay opens on the phone and pairs automatically. Use Connect on the phone to reconnect later.")
+                    .fixedSize(horizontal: false, vertical: true)
+                HStack(spacing: 8) {
+                    Label("USB via ADB", systemImage: "cable.connector")
+                    Text("port \(payload.port)")
+                        .font(.system(.caption, design: .monospaced))
+                }
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                if let expiry = model.pairingExpiry {
+                    Text("Expires \(expiry, style: .relative)")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+                Text("The one-time pairing secret travels over USB; the long-lived device secret is issued after pairing.")
+                    .font(.caption)
+                    .foregroundStyle(.tertiary)
+                    .fixedSize(horizontal: false, vertical: true)
+                Button("Send pairing again") { model.beginPairing() }
                     .controlSize(.small)
             } else {
-                Text("Pairing expired")
+                Text("Pairing window closed")
                     .font(.headline)
-                Text("Show a new QR on the Mac to pair this phone.")
+                Text("Connect the phone by USB, then press Send pairing again.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
-                Button("Show a new QR") { model.beginPairing() }
+                Button("Send pairing again") { model.beginPairing() }
                     .controlSize(.small)
             }
 
             stats
         }
+        .padding(14)
+        .background(.quaternary.opacity(0.28), in: RoundedRectangle(cornerRadius: 12))
     }
 
     private var stats: some View {

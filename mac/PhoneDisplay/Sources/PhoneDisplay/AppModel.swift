@@ -13,7 +13,6 @@ final class AppModel: ObservableObject {
     @Published private(set) var frames = 0
     @Published private(set) var lastLog = ""
     @Published private(set) var pairingPayload: PairingPayload?
-    @Published private(set) var qrImage: NSImage?
     @Published private(set) var pairingExpiry: Date?
     @Published private(set) var pairedDeviceName: String?
     @Published var profile: DisplayProfile {
@@ -28,6 +27,8 @@ final class AppModel: ObservableObject {
     private var port: UInt16 = 8420
     private let power = PowerAssertion()
     private var observers: [NSObjectProtocol] = []
+    private var usbTimer: Timer?
+    private var lastADBSerial: String?
 
     var version: String {
         Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "0.1.0"
@@ -169,10 +170,14 @@ final class AppModel: ObservableObject {
                 DispatchQueue.main.async {
                     self?.pairedDeviceName = device.name
                     self?.pairingPayload = nil
-                    self?.qrImage = nil
                     self?.pairingExpiry = nil
                     self?.status = "\(device.name) paired — connecting"
                     self?.clearDevPairing()
+                }
+            }
+            server.onAuthenticated = { [weak self] device in
+                DispatchQueue.main.async {
+                    self?.pairedDeviceName = device.name
                 }
             }
 
@@ -185,6 +190,7 @@ final class AppModel: ObservableObject {
             isRunning = true
             Diagnostics.log("host started port=\(port)")
             beginPairing()
+            startUSBTimer()
         } catch {
             status = "Could not start: \(error.localizedDescription)"
             Diagnostics.log("host start failed: \(error.localizedDescription)")
@@ -192,6 +198,8 @@ final class AppModel: ObservableObject {
     }
 
     func stop() {
+        usbTimer?.invalidate()
+        usbTimer = nil
         server?.stop()
         server = nil
         pairing = nil
@@ -202,9 +210,9 @@ final class AppModel: ObservableObject {
         fps = 0
         frames = 0
         pairingPayload = nil
-        qrImage = nil
         pairingExpiry = nil
         pairedDeviceName = nil
+        lastADBSerial = nil
         clearDevPairing()
         Diagnostics.log("host stopped")
     }
@@ -213,12 +221,67 @@ final class AppModel: ObservableObject {
         guard let pairing, isRunning else { return }
         let payload = pairing.beginPairing(host: lanHost, port: port)
         pairingPayload = payload
-        qrImage = QRCode.image(for: payload.url)
         pairingExpiry = pairing.pairingExpiry
         pairedDeviceName = nil
-        status = "Waiting for phone — scan the QR"
+        status = "Waiting for phone — USB pairing ready"
         writeDevPairing(payload)
         Diagnostics.log("pairing window opened port=\(port)")
+        lastADBSerial = nil
+        maintainUSB()
+    }
+
+    private func pushPairing(_ payload: PairingPayload) {
+        let port = port
+        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+            let result = USBLink.sendPairing(port: port, payload: payload)
+            DispatchQueue.main.async {
+                guard let self, self.isRunning else { return }
+                if result.sent {
+                    Diagnostics.log("USB pairing sent")
+                    if self.clientCount == 0, self.pairedDeviceName == nil {
+                        self.status = "Waiting for phone — USB pairing sent"
+                    }
+                } else {
+                    Diagnostics.log("USB pairing failed: \(result.detail)")
+                    if self.clientCount == 0, self.pairedDeviceName == nil {
+                        self.status = "USB not ready — \(result.detail)"
+                    }
+                }
+            }
+        }
+    }
+
+    private func startUSBTimer() {
+        usbTimer?.invalidate()
+        usbTimer = Timer.scheduledTimer(withTimeInterval: 5, repeats: true) { [weak self] _ in
+            Task { @MainActor in self?.maintainUSB() }
+        }
+    }
+
+    private func maintainUSB() {
+        guard isRunning else { return }
+        let serial = USBLink.connectedSerial()
+        if let serial {
+            if serial != lastADBSerial {
+                lastADBSerial = serial
+                if clientCount == 0, pairedDeviceName == nil, let payload = pairingPayload {
+                    // The phone may have been plugged in after Start.
+                    pushPairing(payload)
+                    return
+                }
+            }
+        } else {
+            lastADBSerial = nil
+            if clientCount == 0, pairedDeviceName == nil, pairingPayload != nil {
+                status = "USB not ready — no authorized Android device"
+            }
+        }
+        let port = port
+        // USB unplug/replug drops `adb reverse`; restore it so a saved phone
+        // can reconnect without pressing anything on the Mac.
+        DispatchQueue.global(qos: .utility).async {
+            _ = USBLink.ensureReverse(port: port)
+        }
     }
 
     func refreshPairing() {
@@ -230,10 +293,9 @@ final class AppModel: ObservableObject {
             }
         } else if pairingPayload != nil {
             pairingPayload = nil
-            qrImage = nil
             pairingExpiry = nil
             if pairedDeviceName == nil {
-                status = "Pairing expired — show a new QR"
+                status = "Pairing expired — press Send pairing again"
             }
         }
     }
