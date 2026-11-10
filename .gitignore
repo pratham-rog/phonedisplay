@@ -38,3 +38,4 @@ captures/
 # Signing material
 *.jks
 *.keystore
+android/keystore.properties

@@ -47,18 +47,21 @@ sends a one-time pairing intent. The Android app opens and pairs automatically.
 
 ```sh
 cd android
-./gradlew :app:assembleDebug
-# APK: app/build/outputs/apk/debug/app-debug.apk
+./gradlew :app:assembleRelease
+# APK: app/build/outputs/apk/release/app-release.apk
 ```
 
 Install it on the phone (enable "install unknown apps" for the file manager or
-browser you use). The debug APK is signed with the local Android debug key; it
-is not a Play Store build.
+browser you use). The release APK is signed with the local release key; it is
+not a Play Store build. If an earlier debug-signed build is installed, uninstall
+it first: Android will not update across a signing-key change. Release builds
+require the git-ignored `android/keystore.properties` described under
+**Release packaging**.
 
 When the phone is reachable over USB:
 
 ```sh
-adb install -r android/app/build/outputs/apk/debug/app-debug.apk
+adb install -r android/app/build/outputs/apk/release/app-release.apk
 ```
 
 ## Pairing over USB
@@ -153,8 +156,18 @@ dist/SHA256SUMS
 ```
 
 Upload those three files to a GitHub Release. The DMG is ad-hoc signed; the APK
-is debug-signed. See `RELEASE.md` for the download/install text. Set
-`JAVA_HOME` to a JDK 17 if Gradle or `apksigner` cannot find Java.
+is signed with the local release key. See `RELEASE.md` for the
+download/install text. Set `JAVA_HOME` to a JDK 17 if Gradle or `apksigner`
+cannot find Java.
+
+`android/keystore.properties` is required for release builds and is never
+committed. Back up both that file and the referenced keystore: losing the key
+means existing installs cannot receive updates without uninstalling and
+re-pairing.
+
+## License
+
+MIT — see [LICENSE](LICENSE).
 
 ## Current limits
 

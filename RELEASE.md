@@ -31,8 +31,10 @@ effort.
 
 1. Copy the APK to the phone and open it. Allow "install unknown apps" for the
    file manager or browser if prompted.
-2. The APK is signed with the local debug key and is not from Play Store.
+2. The APK is signed with the local release key and is not from Play Store.
 3. Requires Android 8.0 (API 24) or newer.
+4. If an earlier debug-signed build is installed, uninstall it first. Android
+   will not update across a signing-key change.
 
 ## Pair over USB
 
@@ -85,4 +87,10 @@ VERSION=0.1.0 ./tools/package_release.sh
 ```
 
 Requires macOS Command Line Tools, Java 17, and the Android SDK platform 34. Set
-`JAVA_HOME` to a JDK 17 if Gradle or `apksigner` cannot find Java.
+`JAVA_HOME` to a JDK 17 if Gradle or `apksigner` cannot find Java. Release
+builds require the git-ignored `android/keystore.properties` and its keystore;
+back both up.
+
+## License
+
+MIT. See [LICENSE](LICENSE).
