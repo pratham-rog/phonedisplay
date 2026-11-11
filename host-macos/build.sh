@@ -1,5 +1,5 @@
 #!/bin/zsh
-# Builds the PhoneDisplay macOS host helper. Requires only Command Line Tools.
+# Builds the SpareScreen macOS host helper. Requires only Command Line Tools.
 set -euo pipefail
 cd "$(dirname "$0")"
 

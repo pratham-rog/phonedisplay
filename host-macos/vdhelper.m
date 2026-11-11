@@ -1,4 +1,4 @@
-// vdhelper.m — PhoneDisplay host helper
+// vdhelper.m — SpareScreen host helper
 //
 // Milestone 1: creates a *real* virtual display on macOS (a second monitor)
 //              using the private CGVirtualDisplay API — the same mechanism
@@ -942,7 +942,7 @@ int main(int argc, const char *argv[])
         BOOL streamMode = NO;
         BOOL syntheticMode = NO;
         BOOL hwCursor = NO;
-        NSString *name = @"PhoneDisplay";
+        NSString *name = @"SpareScreen";
 
         for (int i = 1; i < argc; i++) {
             NSString *a = @(argv[i]);
@@ -982,7 +982,7 @@ int main(int argc, const char *argv[])
             return 2;
         }
 
-        fprintf(gLog, "PhoneDisplay host helper\n");
+        fprintf(gLog, "SpareScreen host helper\n");
 
         CGDirectDisplayID did = 0;   // set when a virtual display is created
         if (!syntheticMode) {

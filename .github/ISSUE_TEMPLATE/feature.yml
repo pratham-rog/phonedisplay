@@ -1,0 +1,48 @@
+name: Feature request
+description: Suggest an improvement or new capability
+title: "[Feature]: "
+labels: ["enhancement"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        SpareScreen is intentionally USB-first in this release. Wi-Fi, Windows,
+        and other transports are deferred; explain the concrete use case if you
+        are proposing one of them.
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem or use case
+      description: What are you trying to do, and what is missing today?
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed solution
+    validations:
+      required: true
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered
+  - type: dropdown
+    id: area
+    attributes:
+      label: Area
+      options:
+        - macOS app
+        - Android app
+        - Pairing/security
+        - Display/performance
+        - Documentation
+        - Packaging/release
+    validations:
+      required: true
+  - type: checkboxes
+    id: scope
+    attributes:
+      label: Scope
+      options:
+        - label: This request keeps USB as the supported transport.
+        - label: This request would require a security or protocol change.

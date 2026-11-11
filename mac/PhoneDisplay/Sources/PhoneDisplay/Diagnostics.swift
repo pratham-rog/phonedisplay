@@ -3,7 +3,7 @@ import Foundation
 enum Diagnostics {
     static let url: URL = {
         let base = FileManager.default.urls(for: .libraryDirectory, in: .userDomainMask)[0]
-        return base.appendingPathComponent("Logs").appendingPathComponent("PhoneDisplay.log")
+        return base.appendingPathComponent("Logs").appendingPathComponent("SpareScreen.log")
     }()
 
     private static let queue = DispatchQueue(label: "dev.phonedisplay.diagnostics")

@@ -14,7 +14,7 @@ struct ContentView: View {
                 Divider()
 
                 HStack(spacing: 12) {
-                    Button(model.isRunning ? "Stop" : "Start PhoneDisplay") {
+                    Button(model.isRunning ? "Stop" : "Start SpareScreen") {
                         model.isRunning ? model.stop() : model.start()
                     }
                     .buttonStyle(.borderedProminent)
@@ -69,7 +69,7 @@ struct ContentView: View {
                 .font(.system(size: 34, weight: .semibold))
                 .foregroundStyle(.tint)
             VStack(alignment: .leading, spacing: 2) {
-                Text("PhoneDisplay")
+                Text("SpareScreen")
                     .font(.largeTitle.bold())
                 Text("Use your Android phone as a second Mac display.")
                     .foregroundStyle(.secondary)
@@ -149,7 +149,7 @@ struct ContentView: View {
             } else if let payload = model.pairingPayload {
                 Text("Pair over USB")
                     .font(.headline)
-                Text("Keep the phone connected by USB. PhoneDisplay opens on the phone and pairs automatically. Use Connect on the phone to reconnect later.")
+                Text("Keep the phone connected by USB. SpareScreen opens on the phone and pairs automatically. Use Connect on the phone to reconnect later.")
                     .fixedSize(horizontal: false, vertical: true)
                 HStack(spacing: 8) {
                     Label("USB via ADB", systemImage: "cable.connector")

@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Minimal PhoneDisplay protocol test client.
+Minimal SpareScreen protocol test client.
 
 This is exactly what the Android app will do, in Python:
 connect → send "PD01 <token>\\n" → read header line → read frames.

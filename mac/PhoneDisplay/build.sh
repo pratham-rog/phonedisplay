@@ -1,10 +1,10 @@
 #!/bin/zsh
-# Builds PhoneDisplay.app with Command Line Tools only. No Xcode project.
+# Builds SpareScreen.app with Command Line Tools only. No Xcode project.
 set -euo pipefail
 cd "$(dirname "$0")"
 
 ROOT="$(pwd)"
-APP="$ROOT/PhoneDisplay.app"
+APP="$ROOT/SpareScreen.app"
 HELPER_SRC="$ROOT/../../host-macos"
 
 echo "==> core checks"
@@ -21,6 +21,7 @@ rm -rf "$APP"
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Helpers" "$APP/Contents/Resources"
 cp "$ROOT/.build/release/PhoneDisplay" "$APP/Contents/MacOS/PhoneDisplay"
 cp "$HELPER_SRC/vdhelper" "$APP/Contents/Helpers/vdhelper"
+cp "$ROOT/SpareScreen.icns" "$APP/Contents/Resources/SpareScreen.icns"
 
 cat > "$APP/Contents/Info.plist" <<'PLIST'
 <?xml version="1.0" encoding="UTF-8"?>
@@ -28,24 +29,27 @@ cat > "$APP/Contents/Info.plist" <<'PLIST'
 <plist version="1.0">
 <dict>
     <key>CFBundleIdentifier</key><string>dev.phonedisplay.app</string>
-    <key>CFBundleName</key><string>PhoneDisplay</string>
-    <key>CFBundleDisplayName</key><string>PhoneDisplay</string>
+    <key>CFBundleName</key><string>SpareScreen</string>
+    <key>CFBundleDisplayName</key><string>SpareScreen</string>
+    <key>CFBundleIconFile</key><string>SpareScreen.icns</string>
     <key>CFBundleExecutable</key><string>PhoneDisplay</string>
     <key>CFBundlePackageType</key><string>APPL</string>
-    <key>CFBundleShortVersionString</key><string>0.1.0</string>
-    <key>CFBundleVersion</key><string>1</string>
+    <key>CFBundleShortVersionString</key><string>0.1.1</string>
+    <key>CFBundleVersion</key><string>2</string>
     <key>LSMinimumSystemVersion</key><string>14.0</string>
     <key>LSApplicationCategoryType</key><string>public.app-category.utilities</string>
     <key>NSHighResolutionCapable</key><true/>
     <key>NSLocalNetworkUsageDescription</key>
-    <string>PhoneDisplay needs the local network to connect your phone.</string>
-    <key>NSHumanReadableCopyright</key><string>PhoneDisplay</string>
+    <string>SpareScreen needs the local network to connect your phone.</string>
+    <key>NSHumanReadableCopyright</key><string>SpareScreen</string>
 </dict>
 </plist>
 PLIST
 
 plutil -lint "$APP/Contents/Info.plist"
 
+# Keep the existing signing identity and bundle identifier: macOS TCC grants and
+# paired devices are tied to them, not to the public product name.
 SIGN_IDENTITY="${PHONEDISPLAY_SIGN_IDENTITY:-PhoneDisplay Local Signing}"
 SIGN_KEYCHAIN="${PHONEDISPLAY_SIGN_KEYCHAIN:-$HOME/Library/Keychains/PhoneDisplay-Signing.keychain-db}"
 SIGN_PASSWORD_FILE="${PHONEDISPLAY_SIGN_PASSWORD_FILE:-$HOME/Library/Application Support/PhoneDisplay/signing/keychain-password}"

@@ -40,7 +40,7 @@ import java.util.concurrent.TimeUnit
 import javax.net.ssl.SSLSocket
 
 /**
- * PhoneDisplay — turns this phone into a second monitor for the Mac.
+ * SpareScreen — turns this phone into a second monitor for the Mac.
  *
  * Speaks the PD01 protocol (see project README):
  *   → "PD01 <token>\n"    handshake request
@@ -60,7 +60,7 @@ import javax.net.ssl.SSLSocket
 class MainActivity : Activity(), SurfaceHolder.Callback {
 
     companion object {
-        private const val TAG = "PhoneDisplay"
+        private const val TAG = "SpareScreen"
         private const val CONNECT_TIMEOUT_MS = 5_000
         private const val GREETING_TIMEOUT_MS = 15_000
         private const val FRAME_TIMEOUT_MS = 250

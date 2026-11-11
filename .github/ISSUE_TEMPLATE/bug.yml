@@ -1,0 +1,97 @@
+name: Bug report
+description: Report a reproducible problem with SpareScreen
+title: "[Bug]: "
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for reporting a bug. Do not include pairing tokens, device
+        secrets, keystores, or `host-macos/stream.log`. Security issues should
+        follow SECURITY.md instead of this form.
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Before submitting
+      options:
+        - label: I read docs/troubleshooting.md and searched existing issues.
+          required: true
+        - label: I removed tokens, secrets, and private logs from this report.
+          required: true
+  - type: input
+    id: version
+    attributes:
+      label: SpareScreen version
+      placeholder: "0.1.1"
+    validations:
+      required: true
+  - type: input
+    id: macos
+    attributes:
+      label: macOS version and Mac model
+      placeholder: "macOS 14.6, MacBook Air M2"
+    validations:
+      required: true
+  - type: input
+    id: android
+    attributes:
+      label: Android version and phone model
+      placeholder: "Android 14, Galaxy S24 Ultra (SM-S928B)"
+    validations:
+      required: true
+  - type: dropdown
+    id: profile
+    attributes:
+      label: Display profile
+      options:
+        - Universal 1920×1080@60
+        - Galaxy S24 3120×1440@90
+        - Not sure
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      placeholder: |
+        1. Connect the phone by USB...
+        2. Press Start SpareScreen...
+        3. See...
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behavior
+    validations:
+      required: true
+  - type: textarea
+    id: actual
+    attributes:
+      label: Actual behavior
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: Redacted logs or screenshots
+      description: Remove pairing tokens, device secrets, host IDs, and private data.
+      render: shell
+  - type: dropdown
+    id: permissions
+    attributes:
+      label: macOS permissions
+      multiple: true
+      options:
+        - Screen Recording granted
+        - Accessibility granted
+        - Local Network granted
+        - None granted
+  - type: checkboxes
+    id: hardware
+    attributes:
+      label: Hardware checks
+      options:
+        - label: This issue involves the physical S-Pen.
+        - label: This issue involves USB disconnect/reconnect.
+        - label: This issue involves Mac sleep or screen lock.

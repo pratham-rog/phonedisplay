@@ -60,6 +60,7 @@ final class PairingService {
     }
 
     static func defaultDirectory() -> URL {
+        // Internal path kept so existing pairing survives the public rename.
         FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
             .appendingPathComponent("PhoneDisplay", isDirectory: true)
     }

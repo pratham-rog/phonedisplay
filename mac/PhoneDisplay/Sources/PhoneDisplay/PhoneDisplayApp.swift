@@ -6,7 +6,7 @@ struct PhoneDisplayApp: App {
     @NSApplicationDelegateAdaptor(AppDelegate.self) private var appDelegate
 
     var body: some Scene {
-        WindowGroup("PhoneDisplay") {
+        WindowGroup("SpareScreen") {
             ContentView()
                 .environmentObject(model)
                 .onAppear {
@@ -20,8 +20,8 @@ struct PhoneDisplayApp: App {
         .defaultSize(width: 620, height: 780)
         .windowResizability(.contentSize)
 
-        MenuBarExtra("PhoneDisplay", systemImage: "iphone.gen3") {
-            Button("Show PhoneDisplay") {
+        MenuBarExtra("SpareScreen", systemImage: "iphone.gen3") {
+            Button("Show SpareScreen") {
                 NSApp.activate(ignoringOtherApps: true)
                 NSApp.windows.first?.makeKeyAndOrderFront(nil)
             }
@@ -33,7 +33,7 @@ struct PhoneDisplayApp: App {
                 }
             }
             Divider()
-            Button("Quit PhoneDisplay") {
+            Button("Quit SpareScreen") {
                 NSApp.terminate(nil)
             }
         }

@@ -1,0 +1,11 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Troubleshooting guide
+    url: https://github.com/pratham-rog/sparescreen/blob/main/docs/troubleshooting.md
+    about: USB, permissions, black screens, and install fixes.
+  - name: Security report
+    url: https://github.com/pratham-rog/sparescreen/security/advisories/new
+    about: Report a vulnerability privately. Do not open a public issue.
+  - name: Contributing guide
+    url: https://github.com/pratham-rog/sparescreen/blob/main/CONTRIBUTING.md
+    about: Build, test, and pull-request expectations.

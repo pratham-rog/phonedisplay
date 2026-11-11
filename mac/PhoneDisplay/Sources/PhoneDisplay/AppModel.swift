@@ -31,7 +31,7 @@ final class AppModel: ObservableObject {
     private var lastADBSerial: String?
 
     var version: String {
-        Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "0.1.0"
+        Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "0.1.1"
     }
 
     var synthetic: Bool {

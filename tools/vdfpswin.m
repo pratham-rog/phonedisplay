@@ -5,7 +5,7 @@
 // for stream testing — no browser, no automation permissions.
 //
 // build:  clang -fobjc-arc -framework Cocoa -framework QuartzCore -o vdfpswin vdfpswin.m
-// run:    ./vdfpswin [width height]        (default: 3120x1440, PhoneDisplay)
+// run:    ./vdfpswin [width height]        (default: 3120x1440, SpareScreen)
 // stop:   pkill -f vdfpswin
 
 #import <Cocoa/Cocoa.h>
@@ -48,7 +48,7 @@ int main(int argc, const char *argv[]) {
             }
         }
         if (!target) {
-            fprintf(stderr, "vdfpswin: no screen %ux%u — is the PhoneDisplay stream up?\n",
+            fprintf(stderr, "vdfpswin: no screen %ux%u — is the SpareScreen stream up?\n",
                     wantW, wantH);
             return 1;
         }

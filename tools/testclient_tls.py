@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Pinned TLS developer client for the PhoneDisplay secure host.
+"""Pinned TLS developer client for the SpareScreen secure host.
 
 Reads the Mac's 0600 dev-pairing.json, verifies the certificate fingerprint,
 pairs once, then connects with the issued device secret and prints stream stats.

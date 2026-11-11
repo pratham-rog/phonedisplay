@@ -50,7 +50,7 @@ final class HelperProcess {
             "--refresh", String(fps),
             "--fps", String(fps),
             "--bitrate", String(bitrate),
-            "--name", "PhoneDisplay",
+            "--name", "SpareScreen",
         ]
         if synthetic {
             arguments.append("--synthetic")

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""PhoneDisplay protocol self-test — runs against a live `pdctl.py stream`.
+"""SpareScreen protocol self-test — runs against a live `pdctl.py stream`.
 
 Checks the host side of the wire protocol end to end:
 
@@ -161,7 +161,7 @@ def main() -> int:
               f"or pass --token")
         return 1
 
-    print(f"PhoneDisplay self-test → {a.host}:{a.port}\n")
+    print(f"SpareScreen self-test → {a.host}:{a.port}\n")
 
     # 1 — handshake --------------------------------------------------------
     try:

@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 """
-Animated test window for PhoneDisplay.
+Animated test window for SpareScreen.
 
 Creates a borderless, continuously-animating window at a chosen screen
-position — handy to place on the virtual "PhoneDisplay" monitor and verify
+position — handy to place on the virtual "SpareScreen" monitor and verify
 that live motion really reaches the phone.
 
 Usage:

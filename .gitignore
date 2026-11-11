@@ -16,6 +16,7 @@ host-macos/vdhelper.app/
 mac/PhoneDisplay/.build/
 mac/PhoneDisplay/.swiftpm/
 mac/PhoneDisplay/PhoneDisplay.app/
+mac/PhoneDisplay/SpareScreen.app/
 
 # Tool build artifacts
 tools/vdfpswin

@@ -6,7 +6,7 @@ final class PowerAssertion {
 
     func start() {
         guard id == 0 else { return }
-        let reason = "PhoneDisplay is streaming to a phone" as CFString
+        let reason = "SpareScreen is streaming to a phone" as CFString
         IOPMAssertionCreateWithName(
             kIOPMAssertionTypeNoDisplaySleep as CFString,
             IOPMAssertionLevel(kIOPMAssertionLevelOn),

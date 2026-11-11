@@ -139,7 +139,7 @@ class CursorView @JvmOverloads constructor(
         if (!cursorVisible) return
         if (!loggedDraw) {
             loggedDraw = true
-            Log.i("PhoneDisplay", "cursor first draw at ($cx,$cy)  view=${width}x$height  " +
+            Log.i("SpareScreen", "cursor first draw at ($cx,$cy)  view=${width}x$height  " +
                     "video=${videoW}x$videoH  scale=$cursorScale")
         }
         val scale = videoScale()

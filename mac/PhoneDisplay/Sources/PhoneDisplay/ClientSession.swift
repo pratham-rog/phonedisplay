@@ -126,7 +126,7 @@ final class ClientSession {
               let message = object as? [String: Any],
               let type = message["type"] as? String
         else {
-            sendError("version", "Malformed handshake. Update PhoneDisplay.", closeAfterSend: true)
+            sendError("version", "Malformed handshake. Update SpareScreen.", closeAfterSend: true)
             return
         }
 
@@ -136,7 +136,7 @@ final class ClientSession {
         case "hello":
             handleHello(message)
         default:
-            sendError("version", "Unknown handshake. Update PhoneDisplay.", closeAfterSend: true)
+            sendError("version", "Unknown handshake. Update SpareScreen.", closeAfterSend: true)
         }
     }
 

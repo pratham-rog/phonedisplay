@@ -105,7 +105,7 @@ final class TLSIdentity {
         }
         var access: SecAccess?
         let status = SecAccessCreate(
-            "PhoneDisplay TLS" as CFString,
+            "SpareScreen TLS" as CFString,
             [app] as CFArray,
             &access
         )
@@ -146,7 +146,7 @@ final class TLSIdentity {
             "-key", temporary.appendingPathComponent("key.pem").path,
             "-out", temporary.appendingPathComponent("cert.pem").path,
             "-days", "3650",
-            "-subj", "/CN=PhoneDisplay",
+            "-subj", "/CN=SpareScreen",
         ])
         let p12 = temporary.appendingPathComponent("identity.p12")
         try run(openssl, [

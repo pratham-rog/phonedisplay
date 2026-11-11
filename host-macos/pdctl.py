@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-pdctl — PhoneDisplay control utility (macOS host side).
+pdctl — SpareScreen control utility (macOS host side).
 
 Drives the native helper (vdhelper):
 
@@ -804,7 +804,7 @@ async def _stream_sessions(args, hub) -> int:
                 print("stream ended (helper finished)")
                 if frames == 0:
                     print("note: no frames were received — an idle or asleep display produces")
-                    print("      no traffic. Drag a window onto PhoneDisplay and it will flow.")
+                    print("      no traffic. Drag a window onto SpareScreen and it will flow.")
                 return 0
             # someone stopped the helper (pkill, macOS, ...) but the server and
             # the phone are still here: bring the display back instead of dying
@@ -836,7 +836,7 @@ def cmd_stream(args) -> int:
 # ---------------------------------------------------------------- cli
 
 def main() -> int:
-    p = argparse.ArgumentParser(prog="pdctl", description="PhoneDisplay host control")
+    p = argparse.ArgumentParser(prog="pdctl", description="SpareScreen host control")
     sub = p.add_subparsers(dest="cmd", required=True)
 
     sub.add_parser("build", help="compile the native helper")
@@ -848,7 +848,7 @@ def main() -> int:
         sp.add_argument("--inches", type=float, default=6.5,
                         help="pretend panel diagonal in inches (drives DPI scaling)")
         sp.add_argument("--hidpi", action="store_true")
-        sp.add_argument("--name", default="PhoneDisplay")
+        sp.add_argument("--name", default="SpareScreen")
         sp.add_argument("--seconds", type=int, default=0, help="auto-stop after N seconds")
 
     d = sub.add_parser("display", help="create a virtual second monitor")
