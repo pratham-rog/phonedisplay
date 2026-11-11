@@ -77,7 +77,8 @@ After the TLS handshake:
 
 ## Security boundaries
 
-- The listener is reachable only through the USB reverse mapping.
+- The phone reaches the host through the USB reverse mapping. The listener is
+  TLS-protected and requires pairing/device authentication.
 - TLS identity is self-signed and pinned by fingerprint; Android rejects any
   other certificate.
 - One active phone at a time.

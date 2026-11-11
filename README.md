@@ -226,7 +226,7 @@ mac/PhoneDisplay/   SwiftUI app, TLS host, pairing, helper lifecycle
 android/            Kotlin Android client
 host-macos/         vdhelper + legacy Python host harness
 tools/              TLS test client, release packaging
-docs/               architecture, troubleshooting, and logo assets
+docs/               architecture, troubleshooting, technical report, logo assets
 .github/            CI, issue templates, and pull-request template
 ```
 
@@ -243,9 +243,10 @@ docs/               architecture, troubleshooting, and logo assets
 - The macOS 27 fullscreen-Space bug is an OS bug; move a normal window to the
   phone display and fullscreen it there.
 
-See [docs/troubleshooting.md](docs/troubleshooting.md) for fixes and
+See [docs/troubleshooting.md](docs/troubleshooting.md) for fixes,
 [docs/architecture.md](docs/architecture.md) for the component and protocol
-overview.
+overview, and [docs/technical-report.md](docs/technical-report.md) for the full
+technology and build report.
 
 ## Contributing
 
