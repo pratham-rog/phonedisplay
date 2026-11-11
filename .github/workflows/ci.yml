@@ -20,7 +20,7 @@ permissions:
 jobs:
   macos-core:
     name: macOS core checks
-    runs-on: macos-14
+    runs-on: macos-latest
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@v5
